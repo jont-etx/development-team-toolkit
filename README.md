@@ -4,7 +4,7 @@ A Codex plugin for project intake, specialist handoffs, and independent review. 
 
 ## Install
 
-You need Git, Node.js 22 or later, and a Codex CLI with `codex plugin` support. Setup has been tested with Codex CLI 0.147.0.
+You need Git, Node.js 22.13 or later, and a Codex CLI with `codex plugin` support. Setup has been tested with Codex CLI 0.147.0.
 
 Clone the toolkit alongside the project you want to use it in. The examples use PowerShell and assume your project and the toolkit are sibling folders.
 
@@ -14,7 +14,7 @@ codex plugin marketplace add ./development-team-toolkit
 codex plugin add development-team-toolkit@development-team-private
 ```
 
-`development-team-private` is the marketplace ID used by version 0.1.0. To reproduce an install, check out a specific toolkit commit before adding the marketplace.
+`development-team-private` is the marketplace ID. To reproduce an install, check out a specific toolkit commit before adding the marketplace.
 
 ## Set up a project
 
@@ -64,11 +64,30 @@ Wiki setup records the wiki path in `.development-team/wiki.json`. If the select
 
 The toolkit wiki travels with the plugin. It holds the shared [role catalog](plugins/development-team-toolkit/toolkit-wiki/roles.json) and [workflow](plugins/development-team-toolkit/toolkit-wiki/workflow.md). Project settings, decisions, and evidence belong to the project. To pick up shared role changes, update the toolkit checkout and rerun `sync-codex` from the project.
 
+## Coordinate parallel work
+
+The toolkit includes a local Coordinator for each Git clone. All linked worktrees in that clone use the same queue. The queue lives in Git's common directory and works with Node.js 22.13+ without a wiki or a service. Use project handoffs to record the exact base, owned paths, acceptance checks, and next owner.
+
+The Coordinator reserves a whole request at once. Use `file:<repo-relative-path>` for code or directory ownership and agree on one `resource:<name>` for each shared test runner, fixture, or browser session. Overlapping paths and identical resource names wait in request order. Disjoint claims can run together. Claims are cooperative. Git and the filesystem still allow writes by a process that skips the Coordinator.
+
+```powershell
+$request = node $toolkit coordinate request worker-a file:src/search resource:browser-qa | ConvertFrom-Json
+$request.capability | node $toolkit coordinate claim $request.id
+# Start work only once the request is held. If queued, check again at your next checkpoint.
+node $toolkit coordinate status
+# Stop work and clean up the reserved resources before releasing.
+$request.capability | node $toolkit coordinate release $request.id
+```
+
+Use an absolute path for `$toolkit` when running from a linked worktree. Capture the request output privately as shown. Keep the capability out of chat, logs, and command arguments. Pipe it into `coordinate cancel <id>` to withdraw queued work. Held claims survive process exit and require explicit release. A lost capability can leave a request blocking later work. This proof has no recovery command, so keep the capability in a protected location for the life of the request. Every participant must use the Coordinator before touching shared resources. The current queue coordinates one clone on one machine. Separate clones and machines need a single shared authority for common resources.
+
+Projects with a live Coordinator keep it as the authority for its existing resources. Before cutover, verify that the toolkit can honor active claims and queues, enforce the project's environment and fixture rules, and recover safely after a worker or host failure. Switch authority only after a controlled handoff and confirmation that both systems cannot issue overlapping grants.
+
 ## Verify
 
-Run `node --test tests/toolkit.test.mjs` from the toolkit checkout. The tests cover local and wiki settings, an unavailable wiki, and preservation of edited agent files.
+Run `node --test tests/toolkit.test.mjs tests/coordinator.test.mjs` from the toolkit checkout. The tests cover local and wiki settings, preservation of edited agent files, and cross-process coordination in disposable Git worktrees.
 
-Version 0.1.0 packages the Codex workflow and native role setup. The Composer visual review and additional host adapters are pending.
+The Composer visual review and additional host adapters are pending on this branch.
 
 ## License
 

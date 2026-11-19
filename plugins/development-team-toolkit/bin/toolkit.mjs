@@ -123,10 +123,15 @@ async function syncCodex() {
   return { revision: catalog.revision, roles: catalog.roles.length - 1, updated: writes.length, directory };
 }
 
-async function main([command, input, wikiFlag, wikiPath, ...extra]) {
+async function main([command, ...args]) {
+  if (command === 'coordinate') {
+    const { coordinate } = await import('./coordinator.mjs');
+    return coordinate(args);
+  }
+  const [input, wikiFlag, wikiPath, ...extra] = args;
   if (command === 'roles' && input === undefined) return catalog;
   if (!['init', 'save', 'status', 'config', 'sync-codex'].includes(command)) {
-    throw new Error('Usage: toolkit.mjs roles | status | config | init <seed.json> [--wiki <path>] | save <settings.json> | sync-codex');
+    throw new Error('Usage: toolkit.mjs roles | status | config | init <seed.json> [--wiki <path>] | save <settings.json> | sync-codex | coordinate <command>');
   }
   if (['init', 'save'].includes(command) ? !input : input !== undefined) throw new Error('Invalid project settings arguments.');
   if (wikiFlag !== undefined && (command !== 'init' || wikiFlag !== '--wiki' || !wikiPath || extra.length)) {
