@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -126,7 +127,24 @@ async function syncCodex() {
 async function main([command, ...args]) {
   if (command === 'coordinate') {
     const { coordinate } = await import('./coordinator.mjs');
-    return coordinate(args);
+    return coordinate(args, {
+      loadPolicy: async () => {
+        const [primary] = execFileSync('git', ['worktree', 'list', '--porcelain', '-z'], {
+          cwd: project, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+        }).split('\0', 1);
+        if (!primary.startsWith('worktree ') || await realpath(primary.slice(9)) !== await realpath(project)) {
+          throw new Error('Sync Coordinator policy from the primary project root.');
+        }
+        const store = await settingsStore();
+        if (!(await exists(store.file))) throw new Error('Initialize project settings before syncing Coordinator policy.');
+        const config = validateProject(await readJson(store.file));
+        if (config.coordinator !== undefined && (config.coordinator === null || typeof config.coordinator !== 'object'
+          || Array.isArray(config.coordinator) || Object.keys(config.coordinator).some((key) => key !== 'fixtures'))) {
+          throw new Error('Coordinator settings accept a fixtures map.');
+        }
+        return { fixtures: config.coordinator?.fixtures === undefined ? {} : config.coordinator.fixtures };
+      },
+    });
   }
   const [input, wikiFlag, wikiPath, ...extra] = args;
   if (command === 'roles' && input === undefined) return catalog;
