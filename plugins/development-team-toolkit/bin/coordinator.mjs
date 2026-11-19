@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { closeSync, lstatSync, openSync, readFileSync, realpathSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 const hash = (value) => createHash('sha256').update(value).digest();
@@ -207,6 +207,12 @@ export async function coordinate(args, { loadPolicy } = {}) {
   const [command, ...values] = args;
   const root = gitPath('--show-toplevel');
   const commonDir = gitPath('--git-common-dir');
+  try {
+    lstatSync(join(dirname(commonDir), '.coordinator', 'state.sqlite3'));
+    throw new Error('This project uses CPD Coordinator state. Use its designated authority.');
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
   if (!['request', 'claim', 'release', 'cancel', 'status', 'audit', 'authority-init', 'handoff', 'quarantine', 'recover', 'policy-sync'].includes(command)) {
     throw new Error('Usage: coordinator request|claim|release|cancel|status|audit|authority-init|handoff|quarantine|recover|policy-sync');
   }

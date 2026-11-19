@@ -116,7 +116,17 @@ Project settings can live in the project wiki. Live grants, credentials, queues,
 
 ### Replacing an existing Coordinator
 
-Projects with a live Coordinator keep it as the authority for its existing resources. The clean-repo handoff rotates supervision on the toolkit store. A CPD cutover also needs a verified translation of live records and resource identities, enforcement of environment and fixture rules through project adapters, and preserved usage, test, notification, and wiki workflows. Rehearse with disposable state. Before switching live, reconcile active work and queue order and confirm that only one service can grant any shared resource. The project owner approves the live cutover separately.
+Projects with a live Coordinator keep it as the authority for its existing resources. The clean-repo handoff rotates supervision on the toolkit store. Before a live switch, reconcile active work and queue order, verify environment and fixture enforcement through project adapters, and prove that only one service can grant each shared resource. The project owner approves the live cutover separately.
+
+### Optional CPD v1 compatibility adapter
+
+Run the rehearsal in a disposable Git repository. Copy a consistent CPD v1 snapshot to `.coordinator/state.sqlite3` at the primary checkout root, the path the old CPD Coordinator resolves by default. The adapter uses that same SQLite store directly and retains CPD resource keys and modes, request and lease IDs, sequence, usage, outbox, and work records. It validates the store format and uses a project-provided CPD backend file whose SHA-256 was verified independently. The native toolkit Coordinator refuses to create a second store in that checkout. Projects using the standalone Coordinator still need only Node and Git.
+
+Use `node $toolkit coordinate cpd --project <disposable-root> --backend <trusted-backend.py> --backend-sha256 <digest>` with Python on `PATH`. Supply one JSON packet on stdin. Only the authorized operator sends `{"op":"handoff","authority":"<fresh-64-hex-credential>"}`. On this store, handoff is durable. Older CPD clients cannot write or grant after it, including clients that were already running. The operator keeps the credential private. Subsequent packets use `authority`, `op`, and the existing CPD operation fields. `request` and `item_create` can issue private CPD tokens. Capture their response securely.
+
+For MCP, use the project-controlled Python environment with the `mcp` SDK. Launch `cpd-coordinator-mcp.py` with `python -I -B`, the same project and backend flags, and `--authority-file <absolute-path-in-git-common-dir>`. The file contains the private credential and must be readable only by the service user (use owner-only permissions or ACLs). The stdio server exposes `coordinator_call(operation, payload)` with the existing payload and response structure. The handoff command stays local. To enable `refresh_usage`, also configure a trusted `--weekly-usage <file>` and independently verified `--weekly-usage-sha256 <digest>`. With no adapter, refresh refuses. Verify the telemetry allowance binding before deployment.
+
+This adapter protects writes through older Coordinator clients sharing the same SQLite database. It assumes a trusted local operator and does not guard against an OS owner editing the database or another service still granting from a different copy. A live switch requires an approved MCP configuration change, disabled grant admission against the previous store, and tested recovery. Wiki edits, notification delivery, fixture cleanup, and test eligibility remain with the existing project tools and permissions.
 
 ## Verify
 

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -126,6 +126,15 @@ async function syncCodex() {
 
 async function main([command, ...args]) {
   if (command === 'coordinate') {
+    if (args[0] === 'cpd') {
+      const adapter = fileURLToPath(new URL('./cpd-coordinator.py', import.meta.url));
+      process.exitCode = await new Promise((resolveExit, reject) => {
+        const child = spawn('python', ['-I', '-B', adapter, ...args.slice(1)], { stdio: 'inherit' });
+        child.once('error', () => reject(new Error('Python is required for the optional CPD Coordinator adapter.')));
+        child.once('exit', (code) => resolveExit(code ?? 1));
+      });
+      return;
+    }
     const { coordinate } = await import('./coordinator.mjs');
     return coordinate(args, {
       loadPolicy: async () => {
@@ -178,7 +187,8 @@ async function main([command, ...args]) {
 }
 
 try {
-  process.stdout.write(`${JSON.stringify(await main(process.argv.slice(2)), null, 2)}\n`);
+  const result = await main(process.argv.slice(2));
+  if (result !== undefined) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 } catch (error) {
   process.stderr.write(`${error.message}\n`);
   process.exitCode = 1;
