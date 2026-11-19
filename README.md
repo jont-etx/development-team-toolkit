@@ -81,6 +81,23 @@ $request.capability | node $toolkit coordinate release $request.id
 
 Use an absolute path for `$toolkit` when running from a linked worktree. Capture the request output privately as shown. Keep the capability out of chat, logs, and command arguments. Pipe it into `coordinate cancel <id>` to withdraw queued work. Held claims survive process exit. Every participant must use the Coordinator before touching shared resources. The current queue coordinates one clone on one machine. Separate clones and machines need a single shared authority for common resources.
 
+### Optional Coordinator MCP setup
+
+MCP is the tool interface Codex uses to call the Coordinator. The MCP server and local CLI call the same queue. The project wiki can supply settings and fixture rules. Claims stay in the Git clone.
+
+Run these commands from the primary Git checkout root. Setup needs Python 3.11 or later. The install step uses an existing Python environment with the `mcp` SDK. Use `--python <executable>` to choose that environment.
+
+```powershell
+node $toolkit coordinate mcp status
+node $toolkit coordinate mcp install --python <path-to-python>
+```
+
+Status reads the user and project Codex configs and checks for the CPD state file. It reports registration names and whether they are enabled. Detection recognizes Coordinator names and known Coordinator or wiki MCP launch paths. The command also preserves disabled registrations. Opaque aliases without those signals need manual review. Installation adds a standalone entry only in the current project's `.codex/config.toml` and keeps existing settings. Start Codex in the trusted project to load it. The entry uses local executable paths, so run setup on each machine that needs the bridge.
+
+The standalone `coordinator_call` tool supports `status`, `request`, `claim`, `release`, and `cancel`. Use the local CLI for supervision and policy sync. A request capability appears in the MCP tool result and is needed for later calls. Use the private CLI flow where host tool records are unsuitable for capabilities.
+
+For a detected CPD setup, use the existing Coordinator. The optional CPD compatibility transport below handles its current data and payloads. CPD activation and transfer of grant authority are a separate operation.
+
 ### Recover a claim or hand off supervision
 
 Before other participants use the Coordinator, the project owner initializes supervision once with `coordinate authority-init`, supplying a fresh random 64-character lowercase hex credential on standard input. Generate credentials locally and store them in a protected location. Send only request IDs and evidence references through chat. Run `coordinate status` to inspect the queue and `coordinate audit` to review supervision changes, recoveries, and cleanup references.
@@ -131,6 +148,8 @@ This adapter protects writes through older Coordinator clients sharing the same 
 ## Verify
 
 Run `node --test tests/*.test.mjs` from the toolkit checkout. The tests cover local and wiki settings, preservation of edited agent files, and coordination, recovery, and handoff in disposable Git worktrees.
+
+With an MCP-enabled Python environment, run `python -B tests/coordinator-mcp-test.py` to verify installation, preservation of existing registrations, and a shared queue over MCP stdio and the CLI. Pass the Codex executable as the optional argument to check that Codex recognizes the project registration.
 
 The Composer visual review and additional host adapters are pending on this branch.
 

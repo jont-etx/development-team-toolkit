@@ -1,6 +1,6 @@
 {
   "name": "development-team-toolkit",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Portable development team workflows and specialists.",
   "skills": "./skills",
   "interface": {
