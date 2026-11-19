@@ -1,0 +1,12 @@
+{
+  "name": "development-team-toolkit",
+  "version": "0.1.0",
+  "description": "Portable development team workflows and specialists.",
+  "skills": "./skills",
+  "interface": {
+    "displayName": "Development Team Toolkit",
+    "shortDescription": "Coordinate a project through specialist handoffs",
+    "longDescription": "Use shared team roles with each project's own settings, evidence and approvals.",
+    "category": "Productivity"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "development-team-private",
+  "interface": { "displayName": "Development Team Toolkit" },
+  "plugins": [{
+    "name": "development-team-toolkit",
+    "source": { "source": "local", "path": "./plugins/development-team-toolkit" },
+    "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+    "category": "Productivity"
+  }]
+}
