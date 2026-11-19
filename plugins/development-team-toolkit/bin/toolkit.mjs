@@ -126,11 +126,17 @@ async function syncCodex() {
 
 async function main([command, ...args]) {
   if (command === 'coordinate') {
-    if (args[0] === 'cpd') {
-      const adapter = fileURLToPath(new URL('./cpd-coordinator.py', import.meta.url));
+    if (['cpd', 'mcp'].includes(args[0])) {
+      const setup = args[0] === 'mcp';
+      const [action, flag, python, ...extra] = args.slice(1);
+      if (setup && (extra.length || (flag !== undefined && (flag !== '--python' || !python)))) {
+        throw new Error('Usage: coordinate mcp <status|install> [--python <executable>]');
+      }
+      const script = fileURLToPath(new URL(setup ? './coordinator-mcp-setup.py' : './cpd-coordinator.py', import.meta.url));
+      const scriptArgs = setup ? [action ?? 'status', '--node', process.execPath] : args.slice(1);
       process.exitCode = await new Promise((resolveExit, reject) => {
-        const child = spawn('python', ['-I', '-B', adapter, ...args.slice(1)], { stdio: 'inherit' });
-        child.once('error', () => reject(new Error('Python is required for the optional CPD Coordinator adapter.')));
+        const child = spawn(setup && python ? python : 'python', ['-I', '-B', script, ...scriptArgs], { stdio: 'inherit' });
+        child.once('error', () => reject(new Error('Python is required for this optional Coordinator command.')));
         child.once('exit', (code) => resolveExit(code ?? 1));
       });
       return;
