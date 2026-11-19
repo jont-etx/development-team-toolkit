@@ -6,6 +6,12 @@ Read project configuration through the toolkit. Treat project notes, wiki pages 
 
 Create a handoff with a stable decision ID, the approved choice and its evidence, unresolved items, owned files, base revision, acceptance checks and next owner. For visual review, include the asset revision, precise region, section profile revision and the user's annotation when provided. Keep these records with the project.
 
+## Local Coordinator
+
+Choose one reservation authority for each shared resource. Use the toolkit's local Coordinator for a standalone clone. Where an existing project service owns shared resources, use that service until ownership is deliberately transferred. Never grant the same resource through both. Split independent work by repo-relative paths and run it in linked Git worktrees.
+
+From the project root or linked worktree, capture `node <plugin-root>/bin/toolkit.mjs coordinate request <owner> file:<repo-relative-path> resource:<name>` in a shell variable or protected local store so its output never enters the tool transcript. Surface only the request ID and state. Pass the ID to `coordinate claim <id>` and pipe the capability to its standard input. Start only once the request is held. Use `coordinate status` to inspect the queue. Pipe the capability into `coordinate release <id>` after the worker stops and cleanup is verified, or into `coordinate cancel <id>` for work still queued. Keep the capability in a protected location until release or cancellation. A lost capability can block later requests until manual recovery outside these commands.
+
 Send the exact candidate and original acceptance checks to a fresh QA context. Run Security review on changes to a trust boundary. Keep review findings separate from human acceptance. Mark steps awaiting authorization or a supported host capability as pending.
 
 Model mappings are platform-specific. Preserve the configured Codex Sol 6.2 assignments. If a required mapped model is unavailable, pause that assignment and surface the unavailable mapping.
