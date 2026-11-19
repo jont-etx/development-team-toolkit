@@ -79,13 +79,48 @@ node $toolkit coordinate status
 $request.capability | node $toolkit coordinate release $request.id
 ```
 
-Use an absolute path for `$toolkit` when running from a linked worktree. Capture the request output privately as shown. Keep the capability out of chat, logs, and command arguments. Pipe it into `coordinate cancel <id>` to withdraw queued work. Held claims survive process exit and require explicit release. A lost capability can leave a request blocking later work. This proof has no recovery command, so keep the capability in a protected location for the life of the request. Every participant must use the Coordinator before touching shared resources. The current queue coordinates one clone on one machine. Separate clones and machines need a single shared authority for common resources.
+Use an absolute path for `$toolkit` when running from a linked worktree. Capture the request output privately as shown. Keep the capability out of chat, logs, and command arguments. Pipe it into `coordinate cancel <id>` to withdraw queued work. Held claims survive process exit. Every participant must use the Coordinator before touching shared resources. The current queue coordinates one clone on one machine. Separate clones and machines need a single shared authority for common resources.
 
-Projects with a live Coordinator keep it as the authority for its existing resources. Before cutover, verify that the toolkit can honor active claims and queues, enforce the project's environment and fixture rules, and recover safely after a worker or host failure. Switch authority only after a controlled handoff and confirmation that both systems cannot issue overlapping grants.
+### Recover a claim or hand off supervision
+
+Before other participants use the Coordinator, the project owner initializes supervision once with `coordinate authority-init`, supplying a fresh random 64-character lowercase hex credential on standard input. Generate credentials locally and store them in a protected location. Send only request IDs and evidence references through chat. Run `coordinate status` to inspect the queue and `coordinate audit` to review supervision changes, recoveries, and cleanup references.
+
+| Situation | Operation |
+| --- | --- |
+| A queued request lost its credential | Run `coordinate recover <id> <inspection-ref>` with the supervisor credential and a fresh request credential on separate stdin lines. The request keeps its queue position. |
+| A held request may still be running or may have left dirty state | Run `coordinate quarantine <id> <reason-ref>` with the supervisor credential on stdin. It still blocks conflicts and its old credential stops working. |
+| A quarantined worker has stopped and its fixture cleanup is verified | Run `coordinate recover <id> <stop-ref> [evidence.json]` with the supervisor credential and a fresh request credential on separate stdin lines. The request returns to its original queue position and must claim again. |
+| Another supervisor is taking over | Run `coordinate handoff <current-epoch>` with the current and successor supervisor credentials on separate stdin lines. The epoch advances atomically. Active workers keep their own credentials and the queue keeps its order. |
+
+Evidence references identify actual inspection or cleanup records. The CLI records and checks the required references and method names. The supervisor must establish that a worker has stopped and cleanup actually ran before recovery. An uncertain claim stays quarantined. Loss of the supervisor credential requires a separately authorized recovery procedure.
+
+### Project wiki and fixture rules
+
+Add a `coordinator` object to the toolkit project settings. The same schema works with wiki-backed settings or local `.development-team/project.json`.
+
+```json
+{
+  "coordinator": {
+    "fixtures": { "resource:browser-fixture": "reset-fixture" }
+  }
+}
+```
+
+Run `coordinate policy-sync` from the primary project root with the supervisor credential on stdin. Sync before admitting fixture work. The Coordinator pins the rules in its private Git state. A handoff keeps that policy, and changed rules require an empty active queue. If the configured wiki is unavailable, policy sync fails and the last pinned rules still govern claims. For a release or quarantined recovery that holds `resource:browser-fixture`, supply an evidence JSON file like the one below. Repeat the entry for every fixture held by the request.
+
+```json
+{"resource:browser-fixture":{"method":"reset-fixture","ref":"evidence/fixture-reset-42"}}
+```
+
+Project settings can live in the project wiki. Live grants, credentials, queues, and administrative state stay local. This workflow uses the project wiki's existing review and publication rules.
+
+### Replacing an existing Coordinator
+
+Projects with a live Coordinator keep it as the authority for its existing resources. The clean-repo handoff rotates supervision on the toolkit store. A CPD cutover also needs a verified translation of live records and resource identities, enforcement of environment and fixture rules through project adapters, and preserved usage, test, notification, and wiki workflows. Rehearse with disposable state. Before switching live, reconcile active work and queue order and confirm that only one service can grant any shared resource. The project owner approves the live cutover separately.
 
 ## Verify
 
-Run `node --test tests/toolkit.test.mjs tests/coordinator.test.mjs` from the toolkit checkout. The tests cover local and wiki settings, preservation of edited agent files, and cross-process coordination in disposable Git worktrees.
+Run `node --test tests/*.test.mjs` from the toolkit checkout. The tests cover local and wiki settings, preservation of edited agent files, and coordination, recovery, and handoff in disposable Git worktrees.
 
 The Composer visual review and additional host adapters are pending on this branch.
 
