@@ -22,20 +22,34 @@ OPERATIONS = frozenset({
 })
 MAX_PACKET = 65536
 CODE = re.compile(r'^[A-Z][A-Z0-9_]{0,79}$')
+REPARSE_POINT = getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0)
 
 
-def read_authority(path: Path, common: Path) -> str:
-    # A direct child prevents an intermediate symlink from escaping the Git store.
-    if not path.is_absolute() or path.parent.resolve(strict=True) != common:
+def private_path(info, *, directory=False):
+    regular = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
+    return (regular and not getattr(info, 'st_file_attributes', 0) & REPARSE_POINT
+            and (os.name == 'nt' or (info.st_uid == os.geteuid() and not info.st_mode & 0o077)))
+
+
+def read_authority(path: Path, common: Path, external: Path | None = None) -> str:
+    directory = common
+    if external is not None:
+        if (not external.is_absolute() or external.resolve(strict=True) != external
+                or external.is_relative_to(common.parent)
+                or not private_path(external.lstat(), directory=True)):
+            raise ValueError('INVALID_AUTHORITY_DIRECTORY')
+        directory = external
+    if not path.is_absolute() or (path.parent if external else path.parent.resolve(strict=True)) != directory:
         raise ValueError('INVALID_AUTHORITY_FILE')
     before = path.lstat()
-    if not stat.S_ISREG(before.st_mode) or (os.name != 'nt' and before.st_mode & 0o077):
+    if not private_path(before) or (external is not None and before.st_nlink != 1):
         raise ValueError('INVALID_AUTHORITY_FILE')
     flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0)
     descriptor = os.open(path, flags)
     try:
         opened = os.fstat(descriptor)
-        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+        if (not private_path(opened) or (external is not None and opened.st_nlink != 1)
+                or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)):
             raise ValueError('INVALID_AUTHORITY_FILE')
         raw = os.read(descriptor, 129)
     finally:
@@ -79,13 +93,14 @@ def load_weekly_probe(path: Path, expected_hash: str):
 
 
 def create_server(project: Path, backend: Path, backend_sha256: str, authority_file: Path,
-                  weekly_usage: Path = None, weekly_usage_sha256: str = None):
+                  weekly_usage: Path = None, weekly_usage_sha256: str = None,
+                  authority_directory: Path | None = None):
     if (weekly_usage is None) != (weekly_usage_sha256 is None):
         raise ValueError('USAGE_ADAPTER_PIN_REQUIRED')
     module = load_adapter()
     adapter = module.Adapter(project, backend, backend_sha256)
     common = adapter.git_common_dir
-    read_authority(authority_file, common)
+    read_authority(authority_file, common, authority_directory)
     probe = load_weekly_probe(weekly_usage, weekly_usage_sha256) if weekly_usage else None
     server = FastMCP('development-team-cpd-coordinator')
 
@@ -104,7 +119,7 @@ def create_server(project: Path, backend: Path, backend_sha256: str, authority_f
                 raise ValueError('INVALID_OPERATION')
             if len(json.dumps(payload, allow_nan=False).encode('utf-8')) > MAX_PACKET:
                 raise ValueError('INPUT_TOO_LARGE')
-            authority = read_authority(authority_file, common)
+            authority = read_authority(authority_file, common, authority_directory)
             if operation == 'refresh_usage':
                 if payload:
                     raise ValueError('INVALID_INPUT')
@@ -133,11 +148,13 @@ def main():
     parser.add_argument('--backend', type=Path, required=True)
     parser.add_argument('--backend-sha256', required=True)
     parser.add_argument('--authority-file', type=Path, required=True)
+    parser.add_argument('--authority-directory', type=Path)
     parser.add_argument('--weekly-usage', type=Path)
     parser.add_argument('--weekly-usage-sha256')
     args = parser.parse_args()
     create_server(args.project, args.backend, args.backend_sha256, args.authority_file,
-                  args.weekly_usage, args.weekly_usage_sha256).run(transport='stdio')
+                  args.weekly_usage, args.weekly_usage_sha256,
+                  authority_directory=args.authority_directory).run(transport='stdio')
 
 
 if __name__ == '__main__':
