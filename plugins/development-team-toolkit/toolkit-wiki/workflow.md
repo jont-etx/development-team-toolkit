@@ -16,4 +16,18 @@ Only a designated supervisor may rotate supervision, quarantine a held claim, or
 
 Send the exact candidate and original acceptance checks to a fresh QA context. Run Security review on changes to a trust boundary. Keep review findings separate from human acceptance. Mark steps awaiting authorization or a supported host capability as pending.
 
-Model mappings are platform-specific. Preserve the configured Codex Sol 6.2 assignments in Codex and the configured Claude model aliases in Claude Code. If a required mapped model is unavailable, pause that assignment and surface the unavailable mapping.
+Model mappings are platform-specific. Each specialist role names a capability tier (`top` or `strong`) and a reasoning effort; `modelTiers` in the role catalog maps each tier to a model per runtime, and project settings may override a tier under `models`. Preserve the configured assignments until the owner approves a change.
+
+## Model review
+
+Run `models check` from the project root on a regular cadence. It compares the Codex model catalog with the models that tiers and project agent profiles use, flags assigned models the runtime no longer offers, and lists models that are new since the last review. Claude Code aliases already track the newest model in each family, so a Claude change is only needed to move a tier across families. Run `models check --record` after the owner has reviewed the list.
+
+Change a tier only on evidence from the project's own work. Evaluate the current model (champion) against the candidate (challenger) on the same frozen tasks:
+
+- Build a small task set per affected role from finished project work: the base revision, the original handoff, and the acceptance checks that passed. Three to five tasks per role is enough to start; keep the set fixed so results compare across reviews.
+- Developer: run each task from its base revision in a disposable worktree. Hard gates are the original acceptance tests, the project's lint and type checks, and staying inside the claimed files. Then compare diff size against the accepted change, retries and cost.
+- QA Code, QA UX and Security Reviewer: give each a candidate with known defects, taken from real past findings. Score defects found, false positives and evidence quality.
+- Interviewer, Architect, Designer and Concept Artist: produce the deliverable for each task and have it judged blind and pairwise against the champion's output with a written rubric, preferably by a model from another family, with an owner spot check.
+- Run every task at least twice per model; single runs are noisy.
+
+The challenger wins only when it passes every hard gate the champion passes and is better on the role's scores, or equal at clearly lower cost or time. Record the scores, cost and decision as project evidence. After owner approval, update the project `models` settings and rerun `sync-codex` or `sync-claude`; use `models retarget <runtime> <from> <to>` for hand-written project profiles. If a mapped model is unavailable, pause that assignment and surface it. If a required mapped model is unavailable, pause that assignment and surface the unavailable mapping.

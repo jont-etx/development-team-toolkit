@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -91,15 +92,29 @@ const hash = (value) => createHash('sha256').update(value).digest('hex');
 const cleanLines = (value) => value.replaceAll('\r\n', '\n');
 
 const instructions = (role) => [catalog.specialistRules, role.personality, role.instructions].join('\n\n');
+const marker = '# Development Team Toolkit generated content SHA256 ';
+
+// Roles name a capability tier; each runtime maps tiers to models. Project settings may override a tier.
+function modelTiers(config) {
+  const override = config?.models;
+  if (override !== undefined && (override === null || typeof override !== 'object' || Array.isArray(override)
+      || Object.entries(override).some(([runtime, tiers]) => !catalog.modelTiers[runtime] || !tiers || typeof tiers !== 'object'
+        || Array.isArray(tiers) || Object.entries(tiers).some(([tier, model]) => !(tier in catalog.modelTiers[runtime])
+          || typeof model !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:\[\]-]*$/.test(model))))) {
+    throw new Error('Project models settings map a runtime to { tier: model } for known runtimes and tiers.');
+  }
+  return Object.fromEntries(Object.entries(catalog.modelTiers).map(([runtime, tiers]) => [runtime, { ...tiers, ...override?.[runtime] }]));
+}
 
 // Each runtime renders a role as [file name, generated body, optional file prefix before the marker].
 const runtimes = {
   codex: {
     directory: ['.codex', 'agents'],
-    render(role) {
+    extension: '.toml',
+    modelPattern: /^(model = )"([^"\n]*)"$/m,
+    render(role, tiers) {
       const fields = { name: `toolkit-${role.id}`, description: role.description };
-      const mapping = catalog.codexModels[role.id];
-      if (mapping) [fields.model, fields.model_reasoning_effort] = mapping;
+      if (role.tier) [fields.model, fields.model_reasoning_effort] = [tiers[role.tier], role.effort];
       fields.developer_instructions = instructions(role);
       const body = Object.entries(fields).map(([key, value]) => `${key} = ${JSON.stringify(value)}\n`).join('');
       return [`toolkit-${role.id}.toml`, body, ''];
@@ -107,23 +122,115 @@ const runtimes = {
   },
   claude: {
     directory: ['.claude', 'agents'],
-    render(role) {
-      const fields = { name: `toolkit-${role.id}`, description: role.description, model: catalog.claudeModels?.[role.id] ?? 'inherit' };
+    extension: '.md',
+    modelPattern: /^(model: *)"?([^"\n]*?)"?$/m,
+    render(role, tiers) {
+      const fields = { name: `toolkit-${role.id}`, description: role.description, model: role.tier ? tiers[role.tier] : 'inherit' };
       const header = Object.entries(fields).map(([key, value]) => `${key}: ${JSON.stringify(value)}\n`).join('');
       return [`toolkit-${role.id}.md`, `${header}---\n\n${instructions(role)}\n`, '---\n'];
     },
   },
 };
 
-async function syncAgents(runtime) {
+async function agentFiles(runtime) {
+  const { directory: parts, extension, modelPattern } = runtimes[runtime];
+  const directory = join(project, ...parts);
+  if (!(await exists(directory))) return [];
+  const files = [];
+  for (const name of (await readdir(directory)).filter((entry) => entry.endsWith(extension)).sort()) {
+    const file = join(directory, name);
+    const text = cleanLines(await readFile(file, 'utf8'));
+    const match = text.match(modelPattern);
+    files.push({ file, text, model: match?.[2], generated: text.split('\n', 2).some((line) => line.startsWith(marker)) });
+  }
+  return files;
+}
+
+async function codexCatalog(path) {
+  const file = path ? resolve(path) : join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'models_cache.json');
+  if (!(await exists(file))) return undefined;
+  const data = await readJson(file);
+  const models = Array.isArray(data) ? data : data.models;
+  if (!Array.isArray(models)) throw new Error(`Unreadable Codex model catalog: ${file}`);
+  return {
+    file,
+    fetchedAt: data.fetched_at,
+    listed: models.filter((model) => model.visibility === 'list').map((model) => model.slug),
+    known: models.map((model) => model.slug),
+  };
+}
+
+// Claude Code aliases always resolve to the newest model in their family.
+const claudeAliases = ['opus', 'sonnet', 'haiku', 'inherit', 'fable'];
+
+async function modelsCheck(config, options) {
+  const tiers = modelTiers(config);
+  const codex = await codexCatalog(options['--codex-catalog']);
+  const available = {
+    codex: (model) => (codex ? codex.known.includes(model) : null),
+    claude: (model) => (claudeAliases.includes(model) ? true : null),
+  };
+  const report = { attention: [] };
+  for (const runtime of Object.keys(runtimes)) {
+    const tierModels = Object.fromEntries(Object.entries(tiers[runtime]).map(([tier, model]) => [tier, { model, available: available[runtime](model) }]));
+    const profiles = (await agentFiles(runtime)).map(({ file, model, generated }) => ({
+      file: relative(project, file), model: model ?? null, generated, available: model ? available[runtime](model) : null,
+    }));
+    for (const [tier, { model, available: ok }] of Object.entries(tierModels)) {
+      if (ok === false) report.attention.push(`${runtime} tier ${tier} uses ${model}, which the ${runtime} catalog does not offer`);
+    }
+    for (const profile of profiles) {
+      if (profile.available === false) report.attention.push(`${profile.file} uses ${profile.model}, which the ${runtime} catalog does not offer`);
+    }
+    report[runtime] = { tiers: tierModels, profiles };
+  }
+  if (codex) {
+    const used = new Set([...Object.values(tiers.codex), ...report.codex.profiles.map((profile) => profile.model)]);
+    report.codex.catalog = { file: codex.file, fetchedAt: codex.fetchedAt, listed: codex.listed };
+    const baselineFile = join(projectDir, 'model-catalog.json');
+    const baseline = (await exists(baselineFile)) ? (await readJson(baselineFile)).codex : undefined;
+    report.codex.baseline = baseline ? relative(project, baselineFile) : null;
+    report.codex.candidates = codex.listed.filter((model) => !used.has(model) && !baseline?.includes(model));
+    for (const model of report.codex.candidates) {
+      report.attention.push(`codex offers ${model}, ${baseline ? 'new since the last review' : 'not yet reviewed'}; evaluate it`);
+    }
+    if (options['--record']) {
+      await writeJson(baselineFile, { recordedAt: new Date().toISOString(), codex: codex.listed }, false);
+      report.codex.recorded = relative(project, baselineFile);
+    }
+  } else {
+    report.codex.catalog = null;
+    report.attention.push('No Codex model catalog found; start Codex once to refresh it, or pass --codex-catalog <file>');
+  }
+  report.claude.note = 'Claude aliases track the newest model in each family. Compare across families by evaluation before moving a tier.';
+  return report;
+}
+
+async function modelsRetarget(runtime, from, to, options) {
+  if (!runtimes[runtime] || !from || !to || from === to) throw new Error('Usage: models retarget <codex|claude> <from-model> <to-model>');
+  if (runtime === 'codex') {
+    const codex = await codexCatalog(options['--codex-catalog']);
+    if (codex && !codex.known.includes(to)) throw new Error(`The Codex catalog does not offer ${to}.`);
+  }
+  const changed = [];
+  for (const { file, text, model, generated } of await agentFiles(runtime)) {
+    if (generated || model !== from) continue;
+    const updated = text.replace(runtimes[runtime].modelPattern, (_, key) => `${key}"${to}"`);
+    await writeFile(file, updated);
+    changed.push(relative(project, file));
+  }
+  return { runtime, from, to, changed, note: 'Toolkit-generated profiles follow tiers: update project models settings, then rerun sync.' };
+}
+
+async function syncAgents(runtime, config) {
   const { directory: parts, render } = runtimes[runtime];
+  const tiers = modelTiers(config)[runtime];
   const directory = join(project, ...parts);
   const writes = [];
   for (const role of catalog.roles) {
     if (role.id === 'pm') continue;
-    const [name, body, prefix] = render(role);
+    const [name, body, prefix] = render(role, tiers);
     const file = join(directory, name);
-    const marker = '# Development Team Toolkit generated content SHA256 ';
     const contents = `${prefix}${marker}${hash(body)}\n${body}`;
     const present = await exists(file);
     if (present) {
@@ -186,10 +293,28 @@ async function main([command, ...args]) {
       },
     });
   }
+  if (command === 'models') {
+    const [action, ...rest] = args;
+    const options = {};
+    const positional = [];
+    while (rest.length) {
+      const item = rest.shift();
+      if (item === '--record') options[item] = true;
+      else if (item === '--codex-catalog') {
+        if (!rest.length) throw new Error('--codex-catalog needs a file.');
+        options[item] = rest.shift();
+      } else positional.push(item);
+    }
+    const store = await settingsStore();
+    const config = (await exists(store.file)) ? validateProject(await readJson(store.file)) : undefined;
+    if (action === 'check' && !positional.length) return modelsCheck(config, options);
+    if (action === 'retarget' && positional.length === 3) return modelsRetarget(...positional, options);
+    throw new Error('Usage: models check [--record] | models retarget <codex|claude> <from-model> <to-model> [--codex-catalog <file>]');
+  }
   const [input, wikiFlag, wikiPath, ...extra] = args;
   if (command === 'roles' && input === undefined) return catalog;
   if (!['init', 'save', 'status', 'config', 'sync-codex', 'sync-claude'].includes(command)) {
-    throw new Error('Usage: toolkit.mjs roles | status | config | init <seed.json> [--wiki <path>] | save <settings.json> | sync-codex | sync-claude | coordinate <command>');
+    throw new Error('Usage: toolkit.mjs roles | status | config | init <seed.json> [--wiki <path>] | save <settings.json> | sync-codex | sync-claude | models <check|retarget> | coordinate <command>');
   }
   if (['init', 'save'].includes(command) ? !input : input !== undefined) throw new Error('Invalid project settings arguments.');
   if (wikiFlag !== undefined && (command !== 'init' || wikiFlag !== '--wiki' || !wikiPath || extra.length)) {
@@ -210,10 +335,11 @@ async function main([command, ...args]) {
   if (!initialized) throw new Error('Project settings are uninitialized. Run init <seed.json> first.');
   const config = validateProject(await readJson(store.file));
   if (command === 'config') return config;
-  if (command === 'sync-codex') return syncAgents('codex');
-  if (command === 'sync-claude') return syncAgents('claude');
+  if (command === 'sync-codex') return syncAgents('codex', config);
+  if (command === 'sync-claude') return syncAgents('claude', config);
   const updated = validateProject(await readJson(resolve(input)));
   if (updated.id !== config.id) throw new Error('Use the existing project id when updating project settings.');
+  modelTiers(updated);
   await writeJson(store.file, updated, false);
   return { store: store.kind, file: store.file, initialized: true };
 }
