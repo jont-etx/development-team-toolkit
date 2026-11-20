@@ -77,8 +77,12 @@ Wiki setup records the wiki path in `.development-team/wiki.json`. If the select
 | `node $toolkit roles` | Prints the shared roles, personalities, and Codex and Claude Code model mappings |
 | `node $toolkit sync-codex` | Creates or refreshes toolkit profiles under `.codex/agents/` and stops on conflicting edits |
 | `node $toolkit sync-claude` | Creates or refreshes toolkit subagents under `.claude/agents/` and stops on conflicting edits |
+| `node $toolkit models check [--record]` | Compares the Codex model catalog with the models used by tiers and project agent profiles, and flags unavailable or newly offered models |
+| `node $toolkit models retarget <codex\|claude> <from> <to>` | Moves hand-written project agent profiles from one model to another after an approved review |
 
 The toolkit wiki travels with the plugin. It holds the shared [role catalog](plugins/development-team-toolkit/toolkit-wiki/roles.json) and [workflow](plugins/development-team-toolkit/toolkit-wiki/workflow.md). Project settings, decisions, and evidence belong to the project. To pick up shared role changes, update the toolkit checkout and rerun `sync-codex` or `sync-claude` from the project.
+
+Each role names a capability tier, and `modelTiers` in the role catalog maps tiers to models for each runtime. To change a tier for one project, add a `models` object to the project settings, for example `{"models": {"codex": {"top": "<model>"}, "claude": {"strong": "opus"}}}`, save it, and rerun the sync. The [workflow](plugins/development-team-toolkit/toolkit-wiki/workflow.md#model-review) describes how to evaluate a new model before changing a tier.
 
 ## Coordinate parallel work
 
