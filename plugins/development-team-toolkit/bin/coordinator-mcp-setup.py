@@ -104,10 +104,10 @@ def setup(action, node):
     configured = [{'scope': scope, 'name': name, 'enabled': entry.get('enabled', True)}
                   for scope, data in (('user', read_config(user)), ('project', source))
                   for name, entry in servers(data).items() if matches(name, entry)]
-    cpd = details(project / '.coordinator' / 'state.sqlite3') is not None
-    result = {'backend': 'cpd' if cpd else 'standalone', 'registrations': configured}
-    if cpd or configured:
-        return dict(result, status='existing' if configured else 'cpd-handoff-required')
+    legacy_store = details(project / '.coordinator' / 'state.sqlite3') is not None
+    result = {'backend': 'legacy' if legacy_store else 'standalone', 'registrations': configured}
+    if legacy_store or configured:
+        return dict(result, status='existing' if configured else 'legacy-handoff-required')
     if action == 'status':
         return dict(result, status='available')
     if importlib.util.find_spec('mcp') is None:
