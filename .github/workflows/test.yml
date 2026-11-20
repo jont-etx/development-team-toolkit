@@ -17,6 +17,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the legacy-migration test runs an older committed Coordinator
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
