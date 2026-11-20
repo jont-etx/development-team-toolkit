@@ -78,5 +78,6 @@ test('both plugin manifests ship the same Coordinator server and version', async
   assert.equal(codex.name, claude.name);
   const codexServer = JSON.parse(await readFile(join(plugin, codex.mcpServers), 'utf8')).mcpServers.coordinator;
   assert.deepEqual(codexServer.args, ['./bin/coordinator-mcp.mjs']);
+  assert.equal(codexServer.default_tools_approval_mode, 'approve');
   assert.deepEqual(claude.mcpServers.coordinator.args, ['${CLAUDE_PLUGIN_ROOT}/bin/coordinator-mcp.mjs']);
 });
