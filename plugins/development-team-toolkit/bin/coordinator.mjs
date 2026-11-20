@@ -209,7 +209,7 @@ export async function coordinate(args, { loadPolicy } = {}) {
   const commonDir = gitPath('--git-common-dir');
   try {
     lstatSync(join(dirname(commonDir), '.coordinator', 'state.sqlite3'));
-    throw new Error('This project uses CPD Coordinator state. Use its designated authority.');
+    throw new Error('This project has an existing Coordinator store. Use its designated authority.');
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }

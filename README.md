@@ -92,11 +92,11 @@ node $toolkit coordinate mcp status
 node $toolkit coordinate mcp install --python <path-to-python>
 ```
 
-Status reads the user and project Codex configs and checks for the CPD state file. It reports registration names and whether they are enabled. Detection recognizes Coordinator names and known Coordinator or wiki MCP launch paths. The command also preserves disabled registrations. Opaque aliases without those signals need manual review. Installation adds a standalone entry only in the current project's `.codex/config.toml` and keeps existing settings. Start Codex in the trusted project to load it. The entry uses local executable paths, so run setup on each machine that needs the bridge.
+Status reads the user and project Codex configs and checks for an existing Coordinator store at `.coordinator/state.sqlite3`. It reports registration names and whether they are enabled. Detection recognizes Coordinator names and known Coordinator or wiki MCP launch paths. The command also preserves disabled registrations. Opaque aliases without those signals need manual review. Installation adds a standalone entry only in the current project's `.codex/config.toml` and keeps existing settings. Start Codex in the trusted project to load it. The entry uses local executable paths, so run setup on each machine that needs the bridge.
 
 The standalone `coordinator_call` tool supports `status`, `request`, `claim`, `release`, and `cancel`. Use the local CLI for supervision and policy sync. A request capability appears in the MCP tool result and is needed for later calls. Use the private CLI flow where host tool records are unsuitable for capabilities.
 
-For a detected CPD setup, use the existing Coordinator. The optional CPD compatibility transport below handles its current data and payloads. CPD activation and transfer of grant authority are a separate operation.
+When setup reports `existing` or `legacy-handoff-required`, use the project’s designated Coordinator. The standalone installer leaves its registration and data in place.
 
 ### Recover a claim or hand off supervision
 
@@ -135,19 +135,7 @@ Project settings can live in the project wiki. Live grants, credentials, queues,
 
 Projects with a live Coordinator keep it as the authority for its existing resources. The clean-repo handoff rotates supervision on the toolkit store. Before a live switch, reconcile active work and queue order, verify environment and fixture enforcement through project adapters, and prove that only one service can grant each shared resource. The project owner approves the live cutover separately.
 
-### Optional CPD v1 compatibility adapter
-
-Run the rehearsal in a disposable Git repository. Copy a consistent CPD v1 snapshot to `.coordinator/state.sqlite3` at the primary checkout root, the path the old CPD Coordinator resolves by default. The adapter uses that same SQLite store directly and retains CPD resource keys and modes, request and lease IDs, sequence, usage, outbox, and work records. It validates the store format and uses a project-provided CPD backend file whose SHA-256 was verified independently. The native toolkit Coordinator refuses to create a second store in that checkout. Projects using the standalone Coordinator still need only Node and Git.
-
-The adapter recognizes the base CPD schema and the complete Dealer Locator admission and settlement extension. The latter requires its project-owned compatible backend and its exact database guards. Partial extensions, altered guards, and backend/schema mismatches refuse before handoff and during service calls. Project-controlled trusted operators may open an authenticated store in process for signed settlement; no settlement verifier is exposed through the MCP or JSON interface.
-
-Use `node $toolkit coordinate cpd --project <disposable-root> --backend <trusted-backend.py> --backend-sha256 <digest>` with Python on `PATH`. Supply one JSON packet on stdin. Only the authorized operator sends `{"op":"handoff","authority":"<fresh-64-hex-credential>"}`. On this store, handoff is durable. Older CPD clients cannot write or grant after it, including clients that were already running. The operator keeps the credential private. Subsequent packets use `authority`, `op`, and the existing CPD operation fields. `request` and `item_create` can issue private CPD tokens. Capture their response securely.
-
-For MCP, use the project-controlled Python environment with the `mcp` SDK. Launch `cpd-coordinator-mcp.py` with `python -I -B`, the same project and backend flags, and `--authority-file <absolute-key-file>`. For a protected directory outside the checkout, also supply `--authority-directory <absolute-directory>`. Put the key directly in that directory. The default remains the Git common directory. On POSIX, the external directory and key must be owned by the service user with owner-only permissions. On Windows, provision and verify owner-only ACLs on both, and make sure the directory's ancestors protect it against replacement. Keep the key out of command arguments, logs, and Git.
-
-The stdio server exposes `coordinator_call(operation, payload)` with the existing payload and response structure. The handoff command stays local. To enable `refresh_usage`, also configure a trusted `--weekly-usage <file>` and independently verified `--weekly-usage-sha256 <digest>`. With no adapter, refresh refuses. Verify the telemetry allowance binding from the intended service identity before deployment.
-
-This adapter protects writes through older Coordinator clients sharing the same SQLite database. It assumes a trusted local operator and does not guard against an OS owner editing the database or another service still granting from a different copy. A live switch requires an approved MCP configuration change, disabled grant admission against the previous store, and tested recovery. Wiki edits, notification delivery, fixture cleanup, and test eligibility remain with the existing project tools and permissions.
+Keep project profiles, compatibility adapters, and their deployment instructions in the owning project’s local configuration. The public toolkit provides the standalone Coordinator and its MCP setup.
 
 ## Verify
 

@@ -62,12 +62,15 @@ def main():
         config.parent.mkdir()
         original = b'# preserved comment\n[mcp_servers.docs]\nurl = "https://example.invalid"\n'
         config.write_bytes(original)
-        cpd = project / '.coordinator/state.sqlite3'
-        cpd.parent.mkdir()
-        cpd.touch()
-        assert setup('install')['status'] == 'cpd-handoff-required'
+        legacy_store = project / '.coordinator/state.sqlite3'
+        legacy_store.parent.mkdir()
+        legacy_store.touch()
+        assert setup('install') == {'backend': 'legacy', 'registrations': [], 'status': 'legacy-handoff-required'}
+        blocked = subprocess.run(['node', str(CLI), 'coordinate', 'status'], cwd=project, env=env,
+                                 text=True, capture_output=True)
+        assert blocked.returncode != 0 and 'existing Coordinator store' in blocked.stderr
         assert config.read_bytes() == original
-        cpd.unlink()
+        legacy_store.unlink()
         user_config = home / 'config.toml'
         user_config.write_text('[mcp_servers.existing]\ncommand = "coordinator-custom"\nenabled = false\n')
         existing = setup('install')
@@ -91,7 +94,7 @@ def main():
         assert setup('install')['status'] == 'installed'
         assert tomllib.loads(config.read_text())['mcp_servers']['development-team-coordinator'] == server
         asyncio.run(asyncio.wait_for(check_wire(project, server, run), timeout=30))
-        print('PASS: project install, CPD and disabled-registration detection, no duplicate, actual MCP and CLI share one queue')
+        print('PASS: project install, legacy store and disabled-registration detection, no duplicate, actual MCP and CLI share one queue')
 
 
 if __name__ == '__main__':
