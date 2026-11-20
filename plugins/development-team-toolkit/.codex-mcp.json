@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "coordinator": {
+      "command": "node",
+      "cwd": ".",
+      "args": ["./bin/coordinator-mcp.mjs"]
+    }
+  }
+}

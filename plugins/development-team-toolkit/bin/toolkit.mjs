@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -187,6 +187,10 @@ async function modelsCheck(config, options) {
   if (codex) {
     const used = new Set([...Object.values(tiers.codex), ...report.codex.profiles.map((profile) => profile.model)]);
     report.codex.catalog = { file: codex.file, fetchedAt: codex.fetchedAt, listed: codex.listed };
+    const ageDays = codex.fetchedAt ? (Date.now() - Date.parse(codex.fetchedAt)) / 86400000 : Infinity;
+    if (!(ageDays <= 7)) {
+      report.attention.push(`The Codex model catalog is ${Number.isFinite(ageDays) ? `${Math.floor(ageDays)} days` : 'of unknown age'} old; start Codex to refresh it before deciding`);
+    }
     const baselineFile = join(projectDir, 'model-catalog.json');
     const baseline = (await exists(baselineFile)) ? (await readJson(baselineFile)).codex : undefined;
     report.codex.baseline = baseline ? relative(project, baselineFile) : null;
@@ -254,24 +258,7 @@ async function syncAgents(runtime, config) {
 async function main([command, ...args]) {
   if (command === 'coordinate') {
     if (args[0] === 'mcp') {
-      const [action, ...flags] = args.slice(1);
-      const options = {};
-      while (flags.length) {
-        const [flag, value] = flags.splice(0, 2);
-        if (!['--python', '--runtime'].includes(flag) || !value || options[flag] !== undefined
-            || (flag === '--runtime' && !['codex', 'claude'].includes(value))) {
-          throw new Error('Usage: coordinate mcp <status|install> [--python <executable>] [--runtime codex|claude]');
-        }
-        options[flag] = value;
-      }
-      const script = fileURLToPath(new URL('./coordinator-mcp-setup.py', import.meta.url));
-      const runtime = options['--runtime'] ? ['--runtime', options['--runtime']] : [];
-      process.exitCode = await new Promise((resolveExit, reject) => {
-        const child = spawn(options['--python'] ?? 'python', ['-I', '-B', script, action ?? 'status', '--node', process.execPath, ...runtime], { stdio: 'inherit' });
-        child.once('error', () => reject(new Error('Python is required for this optional Coordinator command.')));
-        child.once('exit', (code) => resolveExit(code ?? 1));
-      });
-      return;
+      throw new Error('The Coordinator MCP server ships with the plugin in Codex and Claude Code; no setup is needed.');
     }
     const { coordinate } = await import('./coordinator.mjs');
     return coordinate(args, {

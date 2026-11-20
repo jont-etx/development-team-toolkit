@@ -101,29 +101,15 @@ $request.capability | node $toolkit coordinate release $request.id
 
 Use an absolute path for `$toolkit` when running from a linked worktree. Capture the request output privately as shown. Keep the capability out of chat, logs, and command arguments. Pipe it into `coordinate cancel <id>` to withdraw queued work. Held claims survive process exit. Every participant must use the Coordinator before touching shared resources. The current queue coordinates one clone on one machine. Separate clones and machines need a single shared authority for common resources.
 
-### Optional Coordinator MCP setup
+### Coordinator MCP server
 
-MCP is the tool interface Codex and Claude Code use to call the Coordinator. The MCP server and local CLI call the same queue. The project wiki can supply settings and fixture rules. Claims stay in the Git clone.
+MCP is the tool interface Codex and Claude Code use to call the Coordinator. The plugin ships the server, so installing the plugin is the only setup: no Python, no per-project registration, and nothing to repair when the plugin updates. It runs on the same Node.js as the CLI, and the MCP server and local CLI call the same queue.
 
-Run these commands from the primary Git checkout root. Setup needs Python 3.11 or later. The install step uses an existing Python environment with the `mcp` SDK. Use `--python <executable>` to choose that environment.
+The tool is `coordinator_call`. Codex starts plugin servers in the plugin folder, so pass `project` as the absolute path of the Git checkout you are working in. Claude Code tells the server its project directory, so `project` is optional there. The tool supports `status`, `request`, `claim`, `release` and `cancel`. Use the local CLI for supervision and policy sync. A request capability appears in the MCP tool result and is needed for later calls. Use the private CLI flow where host tool records are unsuitable for capabilities.
 
-```powershell
-node $toolkit coordinate mcp status
-node $toolkit coordinate mcp install --python <path-to-python>
-```
+Projects with an existing Coordinator store at `.coordinator/state.sqlite3` keep their designated Coordinator: the toolkit's server and CLI refuse to grant claims there. Earlier toolkit versions offered `coordinate mcp install`; remove any `development-team-coordinator` entry it added to `.codex/config.toml` or `.mcp.json`.
 
-For Claude Code, add `--runtime claude`:
-
-```powershell
-node $toolkit coordinate mcp status --runtime claude
-node $toolkit coordinate mcp install --runtime claude --python <path-to-python>
-```
-
-Status reads the user and project Codex configs and checks for an existing Coordinator store at `.coordinator/state.sqlite3`. It reports registration names and whether they are enabled. Detection recognizes Coordinator names and known Coordinator or wiki MCP launch paths. The command also preserves disabled registrations. Opaque aliases without those signals need manual review. Installation adds a standalone entry only in the current project's `.codex/config.toml` and keeps existing settings. Start Codex in the trusted project to load it. With `--runtime claude`, status reads Claude Code's user config (`~/.claude.json`, or `$CLAUDE_CONFIG_DIR/.claude.json`) for user and local registrations plus the project's `.mcp.json`, and installation adds the same standalone entry to `.mcp.json` only, keeping its other servers. Claude Code asks you to approve project MCP servers the first time it starts in the project; approve `development-team-coordinator` there or with `claude mcp list`. Each runtime's install leaves the other runtime's config untouched. The entry uses local executable paths, so run setup on each machine that needs the bridge.
-
-The standalone `coordinator_call` tool (`mcp__development-team-coordinator__coordinator_call` in Claude Code) supports `status`, `request`, `claim`, `release`, and `cancel`. Use the local CLI for supervision and policy sync. A request capability appears in the MCP tool result and is needed for later calls. Use the private CLI flow where host tool records are unsuitable for capabilities.
-
-When setup reports `existing` or `legacy-handoff-required`, use the project’s designated Coordinator. The standalone installer leaves its registration and data in place.
+`coordinate status` shows when each request was made and claimed, plus `age_seconds` in its current state, so a stalled holder or an abandoned queued request stands out. Requests created before toolkit 0.1.9 show no times.
 
 ### Recover a claim or hand off supervision
 
@@ -168,7 +154,7 @@ Keep project profiles, compatibility adapters, and their deployment instructions
 
 Run `node --test tests/*.test.mjs` from the toolkit checkout. The tests cover local and wiki settings, Codex profiles and Claude Code subagents, preservation of edited agent files, and coordination, recovery, and handoff in disposable Git worktrees.
 
-With an MCP-enabled Python environment, run `python -B tests/coordinator-mcp-test.py` to verify installation, preservation of existing registrations, and a shared queue over MCP stdio and the CLI. The script also checks the Claude Code `.mcp.json` install against a disposable Claude Code config directory. Pass the Codex executable as the optional argument to check that Codex recognizes the project registration.
+The tests also drive the plugin's MCP server over stdio and check that it shares the CLI queue. GitHub Actions runs the suite on Linux and Windows with Node.js 22.13 and 24 on every push.
 
 The Composer visual review and additional host adapters are pending on this branch.
 

@@ -75,7 +75,7 @@ test('Claude Code subagents come from the same role catalog and keep project edi
 test('model tiers drive profiles, project overrides apply, and models check flags drift', async (t) => {
   const root = await fixture(t);
   const catalog = join(root, 'models.json');
-  await writeFile(catalog, JSON.stringify({ fetched_at: 'now', models: [
+  await writeFile(catalog, JSON.stringify({ fetched_at: new Date().toISOString(), models: [
     { slug: 'gpt-6.2-sol', visibility: 'list' }, { slug: 'gpt-6.1-terra', visibility: 'list' },
     { slug: 'gpt-7-sol', visibility: 'list' }, { slug: 'hidden-model', visibility: 'hide' },
   ] }));
@@ -95,6 +95,10 @@ test('model tiers drive profiles, project overrides apply, and models check flag
   assert.ok(report.attention.some((line) => line.includes('team-architect.toml uses gpt-5-old')));
   assert.ok(report.attention.some((line) => line.includes('gpt-7-sol')));
   assert.equal(report.claude.profiles.find((profile) => profile.file.endsWith('team-architect.md')).model, 'opus');
+  assert.ok(!report.attention.some((line) => line.includes('catalog is')));
+  const stale = join(root, 'stale.json');
+  await writeFile(stale, JSON.stringify({ fetched_at: '2020-01-01T00:00:00Z', models: [] }));
+  assert.ok(run(root, ['models', 'check', '--codex-catalog', stale]).attention.some((line) => /catalog is \d+ days old/.test(line)));
   run(root, ['models', 'check', '--record', '--codex-catalog', catalog]);
   const reviewed = run(root, ['models', 'check', '--codex-catalog', catalog]);
   assert.deepEqual(reviewed.codex.candidates, []);

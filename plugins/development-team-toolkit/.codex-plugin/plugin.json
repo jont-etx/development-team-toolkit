@@ -1,6 +1,6 @@
 {
   "name": "development-team-toolkit",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Portable development team workflows and specialists.",
   "skills": "./skills",
   "interface": {
@@ -8,5 +8,6 @@
     "shortDescription": "Coordinate a project through specialist handoffs",
     "longDescription": "Use shared team roles with each project's own settings, evidence and approvals.",
     "category": "Productivity"
-  }
+  },
+  "mcpServers": "./.codex-mcp.json"
 }

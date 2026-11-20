@@ -63,8 +63,20 @@ function openStore(commonDir) {
   }
   if (!lstatSync(path).isFile()) throw new Error('Coordinator state must be a regular file.');
   const db = new DatabaseSync(path);
-  db.exec(`PRAGMA busy_timeout = 10000;
-    CREATE TABLE IF NOT EXISTS requests (
+  db.exec('PRAGMA busy_timeout = 10000;');
+  if (db.prepare('PRAGMA user_version').get().user_version >= storeVersion) return db;
+  transaction(db, () => {
+    if (db.prepare('PRAGMA user_version').get().user_version >= storeVersion) return;
+    migrate(db);
+  });
+  return db;
+}
+
+// Runs once per store version; every Coordinator command used to repeat it.
+const storeVersion = 2;
+
+function migrate(db) {
+  db.exec(`CREATE TABLE IF NOT EXISTS requests (
       sequence INTEGER PRIMARY KEY AUTOINCREMENT,
       id TEXT NOT NULL UNIQUE,
       capability_hash BLOB NOT NULL,
@@ -72,7 +84,7 @@ function openStore(commonDir) {
       resources TEXT NOT NULL,
       state TEXT NOT NULL CHECK (state IN ('queued', 'held', 'released', 'cancelled'))
     );`);
-  transaction(db, () => {
+  {
     const existing = db.prepare("SELECT type FROM sqlite_master WHERE name = 'requests'").get();
     if (existing?.type === 'table') {
       db.exec('ALTER TABLE requests RENAME TO coordinator_requests');
@@ -95,8 +107,12 @@ function openStore(commonDir) {
     INSERT OR IGNORE INTO coordinator_used_capabilities SELECT capability_hash FROM coordinator_requests;
     INSERT OR IGNORE INTO coordinator_used_capabilities SELECT capability_hash FROM coordinator_authority;
     INSERT OR IGNORE INTO coordinator_used_capabilities SELECT previous_hash FROM coordinator_quarantine;`);
-  });
-  return db;
+  }
+  const columns = new Set(db.prepare('PRAGMA table_info(coordinator_requests)').all().map((column) => column.name));
+  for (const column of ['requested_at', 'claimed_at']) {
+    if (!columns.has(column)) db.exec(`ALTER TABLE coordinator_requests ADD COLUMN ${column} TEXT`);
+  }
+  db.exec(`PRAGMA user_version = ${storeVersion}`);
 }
 
 function authenticate(db, id, capability) {
@@ -108,8 +124,8 @@ function authenticate(db, id, capability) {
   return row;
 }
 
-function transaction(db, work) {
-  db.exec('BEGIN IMMEDIATE');
+function transaction(db, work, mode = 'IMMEDIATE') {
+  db.exec(`BEGIN ${mode}`);
   try {
     const result = work();
     db.exec('COMMIT');
@@ -124,6 +140,14 @@ function requireAuthority(db, capability) {
   const row = db.prepare('SELECT epoch, capability_hash FROM coordinator_authority WHERE singleton = 1').get();
   if (!row || !timingSafeEqual(Buffer.from(row.capability_hash), hash(capability))) throw new Error('Invalid supervisor credentials.');
   return row;
+}
+
+const now = () => new Date().toISOString();
+
+// Seconds in the current state, so a stalled holder or abandoned queued request stands out.
+function age(row) {
+  const since = row.state === 'held' ? row.claimed_at : row.state === 'queued' ? row.requested_at : null;
+  return since ? Math.max(0, Math.floor((Date.now() - Date.parse(since)) / 1000)) : null;
 }
 
 function audit(db, event, requestId, detail) {
@@ -242,17 +266,18 @@ export async function coordinate(args, { loadPolicy } = {}) {
     }
     if (command === 'status') {
       return transaction(db, () => {
-        const rows = db.prepare('SELECT id, owner, resources, state FROM coordinator_requests ORDER BY sequence').all();
+        const rows = db.prepare('SELECT id, owner, resources, state, requested_at, claimed_at FROM coordinator_requests ORDER BY sequence').all();
         const quarantined = new Set(db.prepare('SELECT request_id FROM coordinator_quarantine').all().map((row) => row.request_id));
         const authority = db.prepare('SELECT epoch FROM coordinator_authority WHERE singleton = 1').get();
         const policy = db.prepare('SELECT fixtures FROM coordinator_policy WHERE singleton = 1').get();
         return { epoch: authority?.epoch ?? null, fixtures: policy ? JSON.parse(policy.fixtures) : {},
-          requests: rows.map((row) => ({ ...row, state: quarantined.has(row.id) ? 'quarantined' : row.state, resources: JSON.parse(row.resources) })) };
-      });
+          requests: rows.map((row) => ({ ...row, state: quarantined.has(row.id) ? 'quarantined' : row.state,
+            resources: JSON.parse(row.resources), age_seconds: age(row) })) };
+      }, 'DEFERRED');
     }
     if (command === 'audit') {
-      return { events: db.prepare('SELECT sequence, event, request_id, detail, created_at FROM coordinator_audit ORDER BY sequence').all()
-        .map((row) => ({ ...row, detail: JSON.parse(row.detail) })) };
+      return transaction(db, () => ({ events: db.prepare('SELECT sequence, event, request_id, detail, created_at FROM coordinator_audit ORDER BY sequence').all()
+        .map((row) => ({ ...row, detail: JSON.parse(row.detail) })) }), 'DEFERRED');
     }
     return transaction(db, () => {
       if (command === 'authority-init') {
@@ -290,8 +315,8 @@ export async function coordinate(args, { loadPolicy } = {}) {
         const id = randomUUID();
         const capability = randomBytes(32).toString('hex');
         reserveCapability(db, capability);
-        db.prepare('INSERT INTO coordinator_requests (id, capability_hash, owner, resources, state) VALUES (?, ?, ?, ?, ?)')
-          .run(id, hash(capability), owner, JSON.stringify(resources), 'queued');
+        db.prepare('INSERT INTO coordinator_requests (id, capability_hash, owner, resources, state, requested_at) VALUES (?, ?, ?, ?, ?, ?)')
+          .run(id, hash(capability), owner, JSON.stringify(resources), 'queued', now());
         return { id, capability, state: 'queued' };
       }
       if (command === 'quarantine' || command === 'recover') {
@@ -315,7 +340,7 @@ export async function coordinate(args, { loadPolicy } = {}) {
         const cleanup = quarantine ? cleanupEvidence(db, row, values[2]) : {};
         if (!quarantine && values[2]) throw new Error('Queued recovery does not accept cleanup evidence.');
         reserveCapability(db, nextCapability);
-        db.prepare("UPDATE coordinator_requests SET capability_hash = ?, state = 'queued' WHERE id = ?").run(hash(nextCapability), row.id);
+        db.prepare("UPDATE coordinator_requests SET capability_hash = ?, state = 'queued', claimed_at = NULL WHERE id = ?").run(hash(nextCapability), row.id);
         db.prepare('DELETE FROM coordinator_quarantine WHERE request_id = ?').run(row.id);
         audit(db, 'recover', row.id, { stopRef, cleanup });
         return { state: 'queued' };
@@ -326,7 +351,7 @@ export async function coordinate(args, { loadPolicy } = {}) {
         if (row.state !== 'queued') throw new Error('Only queued requests can be claimed.');
         const other = db.prepare("SELECT resources FROM coordinator_requests WHERE state = 'held' OR (state = 'queued' AND sequence < ?)").all(row.sequence);
         if (other.some((request) => conflicts(JSON.parse(row.resources), JSON.parse(request.resources)))) return { state: 'queued' };
-        db.prepare("UPDATE coordinator_requests SET state = 'held' WHERE id = ?").run(row.id);
+        db.prepare("UPDATE coordinator_requests SET state = 'held', claimed_at = ? WHERE id = ?").run(now(), row.id);
         return { state: 'held' };
       }
       if (command === 'release') {

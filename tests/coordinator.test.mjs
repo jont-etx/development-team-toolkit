@@ -90,6 +90,9 @@ test('bundles hold all resources or none, with status omitting capabilities', as
   assert.deepEqual(record.resources, ['file:src/shared', 'resource:runner']);
   assert.doesNotMatch(JSON.stringify(status), new RegExp(`${runner.capability}|${bundle.capability}`));
   assert.equal(Object.hasOwn(record, 'capability'), false);
+  const holder = status.requests.find((entry) => entry.id === runner.id);
+  assert.ok(Date.parse(record.requested_at) && record.claimed_at === null && Number.isInteger(record.age_seconds));
+  assert.ok(Date.parse(holder.claimed_at) >= Date.parse(holder.requested_at) && Number.isInteger(holder.age_seconds));
   await act(project, 'release', runner);
   assert.equal((await act(worktree, 'claim', bundle)).state, 'held');
 });
