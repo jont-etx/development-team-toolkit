@@ -3,7 +3,10 @@
     "coordinator": {
       "command": "node",
       "cwd": ".",
-      "args": ["./bin/coordinator-mcp.mjs"]
+      "args": [
+        "./bin/coordinator-mcp.mjs"
+      ],
+      "default_tools_approval_mode": "approve"
     }
   }
 }
