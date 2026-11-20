@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "revision": "0.1.2",
+  "revision": "0.1.3",
   "specialistRules": "Follow the current project's instructions, task scope, and permission gates. This role grants no additional authority. Do not launch agents, push, deploy, access shared resources, or grant approval without the applicable authorization. Preserve unrelated work. Report evidence, the exact candidate, unresolved gates and the next owner. Stop affected work when asked.",
   "roles": [
     {
@@ -83,5 +83,15 @@
     "developer": ["gpt-6.1-terra", "medium"],
     "qa-code": ["gpt-6.1-terra", "high"],
     "qa-ux": ["gpt-6.1-terra", "high"]
+  },
+  "claudeModels": {
+    "interviewer": "opus",
+    "architect": "opus",
+    "security-reviewer": "opus",
+    "designer": "sonnet",
+    "concept-artist": "sonnet",
+    "developer": "sonnet",
+    "qa-code": "sonnet",
+    "qa-ux": "sonnet"
   }
 }

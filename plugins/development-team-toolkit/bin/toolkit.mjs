@@ -90,28 +90,48 @@ async function writeJson(path, value, create) {
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const cleanLines = (value) => value.replaceAll('\r\n', '\n');
 
-async function syncCodex() {
-  const directory = join(project, '.codex', 'agents');
+const instructions = (role) => [catalog.specialistRules, role.personality, role.instructions].join('\n\n');
+
+// Each runtime renders a role as [file name, generated body, optional file prefix before the marker].
+const runtimes = {
+  codex: {
+    directory: ['.codex', 'agents'],
+    render(role) {
+      const fields = { name: `toolkit-${role.id}`, description: role.description };
+      const mapping = catalog.codexModels[role.id];
+      if (mapping) [fields.model, fields.model_reasoning_effort] = mapping;
+      fields.developer_instructions = instructions(role);
+      const body = Object.entries(fields).map(([key, value]) => `${key} = ${JSON.stringify(value)}\n`).join('');
+      return [`toolkit-${role.id}.toml`, body, ''];
+    },
+  },
+  claude: {
+    directory: ['.claude', 'agents'],
+    render(role) {
+      const fields = { name: `toolkit-${role.id}`, description: role.description, model: catalog.claudeModels?.[role.id] ?? 'inherit' };
+      const header = Object.entries(fields).map(([key, value]) => `${key}: ${JSON.stringify(value)}\n`).join('');
+      return [`toolkit-${role.id}.md`, `${header}---\n\n${instructions(role)}\n`, '---\n'];
+    },
+  },
+};
+
+async function syncAgents(runtime) {
+  const { directory: parts, render } = runtimes[runtime];
+  const directory = join(project, ...parts);
   const writes = [];
   for (const role of catalog.roles) {
     if (role.id === 'pm') continue;
-    const file = join(directory, `toolkit-${role.id}.toml`);
-    const fields = {
-      name: `toolkit-${role.id}`,
-      description: role.description,
-    };
-    const mapping = catalog.codexModels[role.id];
-    if (mapping) [fields.model, fields.model_reasoning_effort] = mapping;
-    fields.developer_instructions = [catalog.specialistRules, role.personality, role.instructions].join('\n\n');
-    const body = Object.entries(fields).map(([key, value]) => `${key} = ${JSON.stringify(value)}\n`).join('');
+    const [name, body, prefix] = render(role);
+    const file = join(directory, name);
     const marker = '# Development Team Toolkit generated content SHA256 ';
-    const contents = `${marker}${hash(body)}\n${body}`;
+    const contents = `${prefix}${marker}${hash(body)}\n${body}`;
     const present = await exists(file);
     if (present) {
       const current = cleanLines(await readFile(file, 'utf8'));
       if (current === contents) continue;
-      const delimiter = current.indexOf('\n');
-      if (delimiter < 0 || current.slice(0, delimiter) !== marker + hash(current.slice(delimiter + 1))) {
+      const rest = current.startsWith(prefix) ? current.slice(prefix.length) : '';
+      const delimiter = rest.indexOf('\n');
+      if (delimiter < 0 || rest.slice(0, delimiter) !== marker + hash(rest.slice(delimiter + 1))) {
         throw new Error(`Custom agent file conflicts with toolkit setup: ${file}`);
       }
     }
@@ -127,13 +147,20 @@ async function syncCodex() {
 async function main([command, ...args]) {
   if (command === 'coordinate') {
     if (args[0] === 'mcp') {
-      const [action, flag, python, ...extra] = args.slice(1);
-      if (extra.length || (flag !== undefined && (flag !== '--python' || !python))) {
-        throw new Error('Usage: coordinate mcp <status|install> [--python <executable>]');
+      const [action, ...flags] = args.slice(1);
+      const options = {};
+      while (flags.length) {
+        const [flag, value] = flags.splice(0, 2);
+        if (!['--python', '--runtime'].includes(flag) || !value || options[flag] !== undefined
+            || (flag === '--runtime' && !['codex', 'claude'].includes(value))) {
+          throw new Error('Usage: coordinate mcp <status|install> [--python <executable>] [--runtime codex|claude]');
+        }
+        options[flag] = value;
       }
       const script = fileURLToPath(new URL('./coordinator-mcp-setup.py', import.meta.url));
+      const runtime = options['--runtime'] ? ['--runtime', options['--runtime']] : [];
       process.exitCode = await new Promise((resolveExit, reject) => {
-        const child = spawn(python ?? 'python', ['-I', '-B', script, action ?? 'status', '--node', process.execPath], { stdio: 'inherit' });
+        const child = spawn(options['--python'] ?? 'python', ['-I', '-B', script, action ?? 'status', '--node', process.execPath, ...runtime], { stdio: 'inherit' });
         child.once('error', () => reject(new Error('Python is required for this optional Coordinator command.')));
         child.once('exit', (code) => resolveExit(code ?? 1));
       });
@@ -161,8 +188,8 @@ async function main([command, ...args]) {
   }
   const [input, wikiFlag, wikiPath, ...extra] = args;
   if (command === 'roles' && input === undefined) return catalog;
-  if (!['init', 'save', 'status', 'config', 'sync-codex'].includes(command)) {
-    throw new Error('Usage: toolkit.mjs roles | status | config | init <seed.json> [--wiki <path>] | save <settings.json> | sync-codex | coordinate <command>');
+  if (!['init', 'save', 'status', 'config', 'sync-codex', 'sync-claude'].includes(command)) {
+    throw new Error('Usage: toolkit.mjs roles | status | config | init <seed.json> [--wiki <path>] | save <settings.json> | sync-codex | sync-claude | coordinate <command>');
   }
   if (['init', 'save'].includes(command) ? !input : input !== undefined) throw new Error('Invalid project settings arguments.');
   if (wikiFlag !== undefined && (command !== 'init' || wikiFlag !== '--wiki' || !wikiPath || extra.length)) {
@@ -183,7 +210,8 @@ async function main([command, ...args]) {
   if (!initialized) throw new Error('Project settings are uninitialized. Run init <seed.json> first.');
   const config = validateProject(await readJson(store.file));
   if (command === 'config') return config;
-  if (command === 'sync-codex') return syncCodex();
+  if (command === 'sync-codex') return syncAgents('codex');
+  if (command === 'sync-claude') return syncAgents('claude');
   const updated = validateProject(await readJson(resolve(input)));
   if (updated.id !== config.id) throw new Error('Use the existing project id when updating project settings.');
   await writeJson(store.file, updated, false);
