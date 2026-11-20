@@ -1,20 +1,32 @@
 # Development Team Toolkit
 
-A Codex plugin for project intake, specialist handoffs, and independent review. Use it in a plain Git repo or in a project with its own wiki. The project manager runs in the hub chat. Native Codex profiles cover interviewing, architecture, design, concept art, development, code QA, UX QA, security review, and coordination.
+A Codex and Claude Code plugin for project intake, specialist handoffs, and independent review. Use it in a plain Git repo or in a project with its own wiki. The project manager runs in the hub chat. Native Codex profiles and Claude Code subagents cover interviewing, architecture, design, concept art, development, code QA, UX QA, security review, and coordination.
 
 ## Install
 
-You need Git, Node.js 22.13 or later, and a Codex CLI with `codex plugin` support. Setup has been tested with Codex CLI 0.147.0.
+You need Git, Node.js 22.13 or later, and Codex CLI with `codex plugin` support or Claude Code with `claude plugin` support. Setup has been tested with Codex CLI 0.147.0 and Claude Code 2.1.330.
 
 Clone the toolkit alongside the project you want to use it in. The examples use PowerShell and assume your project and the toolkit are sibling folders.
 
 ```powershell
 git clone https://github.com/jont-etx/development-team-toolkit.git
+```
+
+For Codex:
+
+```powershell
 codex plugin marketplace add ./development-team-toolkit
 codex plugin add development-team-toolkit@development-team-private
 ```
 
-`development-team-private` is the marketplace ID. To reproduce an install, check out a specific toolkit commit before adding the marketplace.
+For Claude Code:
+
+```powershell
+claude plugin marketplace add ./development-team-toolkit
+claude plugin install development-team-toolkit@development-team-private
+```
+
+`development-team-private` is the marketplace ID for both runtimes. Codex reads `.agents/plugins/marketplace.json` and `.codex-plugin/plugin.json`; Claude Code reads `.claude-plugin/marketplace.json` and `.claude-plugin/plugin.json`. Both point at the same skill, role catalog, and scripts. To reproduce an install, check out a specific toolkit commit before adding the marketplace. Add `--scope project` to the Claude Code install to record it in the project's `.claude/settings.json` for everyone who opens the project.
 
 ## Set up a project
 
@@ -35,12 +47,15 @@ codex plugin add development-team-toolkit@development-team-private
    $toolkit = "../development-team-toolkit/plugins/development-team-toolkit/bin/toolkit.mjs"
    node $toolkit status
    node $toolkit init ./team-seed.json
-   node $toolkit sync-codex
+   node $toolkit sync-codex    # Codex: .codex/agents/toolkit-*.toml
+   node $toolkit sync-claude   # Claude Code: .claude/agents/toolkit-*.md
    ```
+
+   Run the sync for each runtime you use. Both read the same role catalog.
 
    `init` stores a copy in the project's configured location. After verifying it with `node $toolkit config`, the seed file is optional.
 
-3. Open the project in Codex and select **Development Team Toolkit**. For a first task, try: “Use Development Team Toolkit to scope this change. Ask me for the decision that affects acceptance, then prepare the Developer and independent QA handoffs.”
+3. Open the project in Codex and select **Development Team Toolkit**, or open it in Claude Code, where the `development-team` skill loads from the plugin. For a first task, try: “Use Development Team Toolkit to scope this change. Ask me for the decision that affects acceptance, then prepare the Developer and independent QA handoffs.”
 
 4. Keep the decision and handoffs in the project. Give the reviewer the same decision and acceptance checks as the Developer, plus the exact candidate to verify. The owner makes the final acceptance decision.
 
@@ -59,10 +74,11 @@ Wiki setup records the wiki path in `.development-team/wiki.json`. If the select
 | `node $toolkit status` | Shows the settings location, initialization state, and toolkit role revision |
 | `node $toolkit config` | Prints the active project settings |
 | `node $toolkit save ./updated-settings.json` | Updates settings in the active store |
-| `node $toolkit roles` | Prints the shared roles, personalities, and Codex model mappings |
+| `node $toolkit roles` | Prints the shared roles, personalities, and Codex and Claude Code model mappings |
 | `node $toolkit sync-codex` | Creates or refreshes toolkit profiles under `.codex/agents/` and stops on conflicting edits |
+| `node $toolkit sync-claude` | Creates or refreshes toolkit subagents under `.claude/agents/` and stops on conflicting edits |
 
-The toolkit wiki travels with the plugin. It holds the shared [role catalog](plugins/development-team-toolkit/toolkit-wiki/roles.json) and [workflow](plugins/development-team-toolkit/toolkit-wiki/workflow.md). Project settings, decisions, and evidence belong to the project. To pick up shared role changes, update the toolkit checkout and rerun `sync-codex` from the project.
+The toolkit wiki travels with the plugin. It holds the shared [role catalog](plugins/development-team-toolkit/toolkit-wiki/roles.json) and [workflow](plugins/development-team-toolkit/toolkit-wiki/workflow.md). Project settings, decisions, and evidence belong to the project. To pick up shared role changes, update the toolkit checkout and rerun `sync-codex` or `sync-claude` from the project.
 
 ## Coordinate parallel work
 
@@ -83,7 +99,7 @@ Use an absolute path for `$toolkit` when running from a linked worktree. Capture
 
 ### Optional Coordinator MCP setup
 
-MCP is the tool interface Codex uses to call the Coordinator. The MCP server and local CLI call the same queue. The project wiki can supply settings and fixture rules. Claims stay in the Git clone.
+MCP is the tool interface Codex and Claude Code use to call the Coordinator. The MCP server and local CLI call the same queue. The project wiki can supply settings and fixture rules. Claims stay in the Git clone.
 
 Run these commands from the primary Git checkout root. Setup needs Python 3.11 or later. The install step uses an existing Python environment with the `mcp` SDK. Use `--python <executable>` to choose that environment.
 
@@ -92,9 +108,16 @@ node $toolkit coordinate mcp status
 node $toolkit coordinate mcp install --python <path-to-python>
 ```
 
-Status reads the user and project Codex configs and checks for an existing Coordinator store at `.coordinator/state.sqlite3`. It reports registration names and whether they are enabled. Detection recognizes Coordinator names and known Coordinator or wiki MCP launch paths. The command also preserves disabled registrations. Opaque aliases without those signals need manual review. Installation adds a standalone entry only in the current project's `.codex/config.toml` and keeps existing settings. Start Codex in the trusted project to load it. The entry uses local executable paths, so run setup on each machine that needs the bridge.
+For Claude Code, add `--runtime claude`:
 
-The standalone `coordinator_call` tool supports `status`, `request`, `claim`, `release`, and `cancel`. Use the local CLI for supervision and policy sync. A request capability appears in the MCP tool result and is needed for later calls. Use the private CLI flow where host tool records are unsuitable for capabilities.
+```powershell
+node $toolkit coordinate mcp status --runtime claude
+node $toolkit coordinate mcp install --runtime claude --python <path-to-python>
+```
+
+Status reads the user and project Codex configs and checks for an existing Coordinator store at `.coordinator/state.sqlite3`. It reports registration names and whether they are enabled. Detection recognizes Coordinator names and known Coordinator or wiki MCP launch paths. The command also preserves disabled registrations. Opaque aliases without those signals need manual review. Installation adds a standalone entry only in the current project's `.codex/config.toml` and keeps existing settings. Start Codex in the trusted project to load it. With `--runtime claude`, status reads Claude Code's user config (`~/.claude.json`, or `$CLAUDE_CONFIG_DIR/.claude.json`) for user and local registrations plus the project's `.mcp.json`, and installation adds the same standalone entry to `.mcp.json` only, keeping its other servers. Claude Code asks you to approve project MCP servers the first time it starts in the project; approve `development-team-coordinator` there or with `claude mcp list`. Each runtime's install leaves the other runtime's config untouched. The entry uses local executable paths, so run setup on each machine that needs the bridge.
+
+The standalone `coordinator_call` tool (`mcp__development-team-coordinator__coordinator_call` in Claude Code) supports `status`, `request`, `claim`, `release`, and `cancel`. Use the local CLI for supervision and policy sync. A request capability appears in the MCP tool result and is needed for later calls. Use the private CLI flow where host tool records are unsuitable for capabilities.
 
 When setup reports `existing` or `legacy-handoff-required`, use the project’s designated Coordinator. The standalone installer leaves its registration and data in place.
 
@@ -139,9 +162,9 @@ Keep project profiles, compatibility adapters, and their deployment instructions
 
 ## Verify
 
-Run `node --test tests/*.test.mjs` from the toolkit checkout. The tests cover local and wiki settings, preservation of edited agent files, and coordination, recovery, and handoff in disposable Git worktrees.
+Run `node --test tests/*.test.mjs` from the toolkit checkout. The tests cover local and wiki settings, Codex profiles and Claude Code subagents, preservation of edited agent files, and coordination, recovery, and handoff in disposable Git worktrees.
 
-With an MCP-enabled Python environment, run `python -B tests/coordinator-mcp-test.py` to verify installation, preservation of existing registrations, and a shared queue over MCP stdio and the CLI. Pass the Codex executable as the optional argument to check that Codex recognizes the project registration.
+With an MCP-enabled Python environment, run `python -B tests/coordinator-mcp-test.py` to verify installation, preservation of existing registrations, and a shared queue over MCP stdio and the CLI. The script also checks the Claude Code `.mcp.json` install against a disposable Claude Code config directory. Pass the Codex executable as the optional argument to check that Codex recognizes the project registration.
 
 The Composer visual review and additional host adapters are pending on this branch.
 

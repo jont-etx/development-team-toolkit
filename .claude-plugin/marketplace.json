@@ -1,0 +1,11 @@
+{
+  "name": "development-team-private",
+  "owner": { "name": "Development Team Toolkit maintainers" },
+  "metadata": { "description": "Development Team Toolkit for Claude Code." },
+  "plugins": [{
+    "name": "development-team-toolkit",
+    "source": "./plugins/development-team-toolkit",
+    "description": "Portable development team workflows and specialists.",
+    "category": "productivity"
+  }]
+}

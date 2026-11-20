@@ -16,4 +16,4 @@ Only a designated supervisor may rotate supervision, quarantine a held claim, or
 
 Send the exact candidate and original acceptance checks to a fresh QA context. Run Security review on changes to a trust boundary. Keep review findings separate from human acceptance. Mark steps awaiting authorization or a supported host capability as pending.
 
-Model mappings are platform-specific. Preserve the configured Codex Sol 6.2 assignments. If a required mapped model is unavailable, pause that assignment and surface the unavailable mapping.
+Model mappings are platform-specific. Preserve the configured Codex Sol 6.2 assignments in Codex and the configured Claude model aliases in Claude Code. If a required mapped model is unavailable, pause that assignment and surface the unavailable mapping.
