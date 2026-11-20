@@ -94,7 +94,51 @@ def main():
         assert setup('install')['status'] == 'installed'
         assert tomllib.loads(config.read_text())['mcp_servers']['development-team-coordinator'] == server
         asyncio.run(asyncio.wait_for(check_wire(project, server, run), timeout=30))
+        check_claude(root, project, env, run)
         print('PASS: project install, legacy store and disabled-registration detection, no duplicate, actual MCP and CLI share one queue')
+        print('PASS: Claude Code .mcp.json install, user/local detection, no duplicate, same queue over MCP')
+
+
+def check_claude(root, project, env, run):
+    claude_home = root / 'claude-home'
+    claude_home.mkdir()
+    env['CLAUDE_CONFIG_DIR'] = str(claude_home)
+
+    def setup(action):
+        return json.loads(run('coordinate', 'mcp', action, '--runtime', 'claude',
+                              '--python', sys.executable).stdout)
+
+    codex_config = (project / '.codex/config.toml').read_bytes()
+    assert setup('status') == {'backend': 'standalone', 'registrations': [], 'runtime': 'claude',
+                               'status': 'available'}
+    user_config = claude_home / '.claude.json'
+    user_config.write_text(json.dumps({'projects': {project.resolve().as_posix(): {'mcpServers': {
+        'team-queue': {'command': 'python', 'args': ['coordinator-custom.py']}}}}}))
+    assert setup('install')['registrations'] == [{'scope': 'local', 'name': 'team-queue', 'enabled': True}]
+    assert not (project / '.mcp.json').exists()
+    user_config.unlink()
+    config = project / '.mcp.json'
+    config.write_text(json.dumps({'mcpServers': {'docs': {'type': 'http', 'url': 'https://example.invalid'}}}))
+    assert setup('install')['status'] == 'installed'
+    installed = json.loads(config.read_text())
+    assert installed['mcpServers']['docs'] == {'type': 'http', 'url': 'https://example.invalid'}
+    entry = installed['mcpServers']['development-team-coordinator']
+    assert entry['type'] == 'stdio'
+    assert setup('install')['status'] == 'existing'
+    assert json.loads(config.read_text()) == installed
+    assert (project / '.codex/config.toml').read_bytes() == codex_config
+    cli_status = json.loads(run('coordinate', 'status').stdout)
+    asyncio.run(asyncio.wait_for(check_claude_wire(project, entry, cli_status), timeout=30))
+
+
+async def check_claude_wire(project, entry, cli_status):
+    params = StdioServerParameters(command=entry['command'], args=entry['args'], cwd=project)
+    async with stdio_client(params) as streams:
+        async with ClientSession(*streams) as session:
+            await session.initialize()
+            reply = await session.call_tool('coordinator_call', {'operation': 'status', 'payload': {}})
+            assert not reply.isError, reply.content
+            assert reply.structuredContent['result'] == cli_status
 
 
 if __name__ == '__main__':

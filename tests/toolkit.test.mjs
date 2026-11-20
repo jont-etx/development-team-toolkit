@@ -53,6 +53,25 @@ test('clean project uses local config and wiki-sourced native agent profiles', a
   assert.equal(existsSync(join(root, '.wiki')), false);
 });
 
+test('Claude Code subagents come from the same role catalog and keep project edits', async (t) => {
+  const root = await fixture(t);
+  run(root, ['init', 'seed.json']);
+  const agents = run(root, ['sync-claude']);
+  assert.equal(agents.roles, 9);
+  assert.equal(agents.updated, 9);
+  assert.match(agents.directory, /[\\/]\.claude[\\/]agents$/);
+  assert.equal(run(root, ['sync-claude']).updated, 0);
+  const architect = join(agents.directory, 'toolkit-architect.md');
+  const contents = await readFile(architect, 'utf8');
+  assert.match(contents, /^---\n# Development Team Toolkit generated content SHA256 [0-9a-f]{64}\nname: "toolkit-architect"\n/);
+  assert.match(contents, /\nmodel: "opus"\n---\n\nFollow the current project's instructions/);
+  assert.match(await readFile(join(agents.directory, 'toolkit-coordinator.md'), 'utf8'), /\nmodel: "inherit"\n/);
+  assert.equal(existsSync(join(root, '.codex')), false);
+  await writeFile(architect, 'project customization\n', { flag: 'a' });
+  run(root, ['sync-claude'], /conflicts with toolkit setup/);
+  assert.match(await readFile(architect, 'utf8'), /project customization/);
+});
+
 test('detected project wiki is authoritative even after it becomes unavailable', async (t) => {
   const root = await fixture(t);
   const wiki = join(root, '.wiki');
