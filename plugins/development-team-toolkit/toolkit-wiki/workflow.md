@@ -23,6 +23,19 @@ Claude Code or Codex may run out of usage, hit a limit mid-task or be unavailabl
 
 When both runtimes are at their usage reserve, pause at a safe checkpoint instead.
 
+## Parallel workers
+
+The hub may run several specialists at once on one task, up to the project's `parallel.maxWorkers` (default 2; the hub is not counted).
+
+1. **Split by files.** Give each worker files or directories no other worker touches. Files every part would change (version numbers, import or registry lists, shared data IDs) stay with the hub and change after the workers merge. If a split needs the same file twice, run those parts in sequence.
+2. **Start each worker** with `worker start <name> <files>...`. It reserves exactly those paths through the Coordinator and creates a linked worktree on branch `worker/<name>`. Overlapping workers queue in request order; rerun `worker start <name>` to retry a queued one.
+3. **Reserve shared contracts too.** When a worker changes something another area depends on (a shared model, API, schema or template), add `--resource resource:contract-<name>`. Anyone else changing that contract queues behind it, while work that only uses the contract continues.
+4. **Hand off and dispatch together.** Write each worker's handoff (owned files = its declared files) and check it, then start the specialists in the same turn, each told its worktree path. Workers edit and commit only in their own worktree; the role guard keeps them inside their write scope.
+5. **Integrate in order.** `worker finish <name>` refuses uncommitted work and any changed file the worker did not declare. It merges by fast-forward only, then releases the reservation and removes the worktree. When the target branch has moved on, rebase the worker as the message says, rerun its checks, and finish again. After all workers merge, the hub makes the shared-file changes and sends the combined result to a fresh QA review.
+6. **Failures stay visible.** A blocked or failed worker keeps its worktree, branch and reservation for review. Do not delete them without the owner.
+
+File reservations stop two workers editing the same files. They cannot see semantic clashes in different files, such as duplicate IDs, routes or incompatible dependencies, so tests and review still apply.
+
 ## Local Coordinator
 
 Choose one reservation authority for each shared resource. Use the toolkit's local Coordinator for a standalone clone. Where an existing project service owns shared resources, use that service until ownership is deliberately transferred. Never grant the same resource through both. Split independent work by repo-relative paths and run it in linked Git worktrees.

@@ -79,6 +79,8 @@ Wiki setup records the wiki path in `.development-team/wiki.json`. If the select
 | `node $toolkit sync-claude` | Creates or refreshes toolkit subagents under `.claude/agents/`, removes unedited subagents for retired roles, and stops on conflicting edits |
 | `node $toolkit models check [--record]` | Compares the Codex model catalog with the models used by tiers and project agent profiles, and flags unavailable or newly offered models |
 | `node $toolkit models retarget <codex\|claude> <from> <to>` | Moves hand-written project agent profiles from one model to another after an approved review |
+| `node $toolkit worker start <name> <files>... [--resource resource:<name>]` | Reserves a worker's files (and named resources) through the Coordinator and creates its linked worktree under `.worktrees/` |
+| `node $toolkit worker status` / `worker finish <name>` | Lists workers; finishes one by refusing undeclared changes, fast-forwarding it into its branch and releasing its reservation |
 | `node $toolkit install-codex-hooks` | Installs the role guard as a Codex project hook; trust it once in Codex with `/hooks` |
 | `node $toolkit models eval ./eval.json` | Replays frozen tasks for each contender in throwaway worktrees and reports must-pass results per role |
 | `node $toolkit handoff check ./handoff.md` | Checks a handoff has a decision, a real base commit, repo-relative owned files, acceptance checks and a next owner |
@@ -137,6 +139,8 @@ Limits: Codex ignores `sandbox_mode` in custom agent files (subagents inherit th
 Cross-family review and hot paths live under `review` in the project settings, for example `{"review": {"hotPaths": ["src/billing/**", "migrations/**"]}}`. `crossFamily` is `hot-paths` (default), `always` or `off`. `handoff check` then requires the handoff's Runtime section to name a reviewer from the other runtime than the builder, or a `cross-family review pending` marker when that runtime is unavailable. The [workflow](plugins/development-team-toolkit/toolkit-wiki/workflow.md#review-independence) covers review independence, Test Engineer and Release Reviewer, and how work continues when one runtime is unavailable.
 
 ## Coordinate parallel work
+
+For several specialists on one task, use the [parallel workers](plugins/development-team-toolkit/toolkit-wiki/workflow.md#parallel-workers) procedure: `worker start` gives each worker its own worktree and Coordinator reservation, `worker finish` checks and merges it, and `parallel.maxWorkers` in the project settings caps how many run at once (default 2).
 
 The toolkit includes a local Coordinator for each Git clone. All linked worktrees in that clone use the same queue. The queue lives in Git's common directory and works with Node.js 22.13+ without a wiki or a service. Use project handoffs to record the exact base, owned paths, acceptance checks, and next owner.
 
