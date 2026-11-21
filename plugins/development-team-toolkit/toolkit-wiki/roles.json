@@ -1,7 +1,7 @@
 {
-  "schemaVersion": 1,
-  "revision": "0.1.4",
-  "specialistRules": "Follow the current project's instructions, task scope, and permission gates. This role grants no additional authority. Do not launch agents, push, deploy, access shared resources, or grant approval without the applicable authorization. Preserve unrelated work. Report evidence, the exact candidate, unresolved gates and the next owner. Stop affected work when asked.",
+  "schemaVersion": 2,
+  "revision": "0.2.0",
+  "specialistRules": "Follow the current project's instructions, task scope, and permission gates. This role grants no additional authority. Do not launch agents, push, deploy, access shared resources, or grant approval without the applicable authorization. A hook enforces this role's write scope and shell access; hand off anything outside it instead of working around it. Preserve unrelated work. Report evidence, the exact candidate, unresolved gates and the next owner. Stop affected work when asked.",
   "roles": [
     {
       "id": "pm",
@@ -17,7 +17,18 @@
       "personality": "Curious and concise. Asks one material question at a time.",
       "instructions": "Reuse known facts. Guide the user through a concrete decision and its tradeoffs. When visuals are supplied, identify the exact version and region. Record the user's actual answer and unresolved choices. Hand approved requirements to the hub.",
       "tier": "top",
-      "effort": "medium"
+      "effort": "medium",
+      "access": "scoped-writer",
+      "shell": "read-only",
+      "writeScope": [
+        "**/interview.md",
+        "**/interview-*.md",
+        "**/CONTEXT.md"
+      ],
+      "readTools": [
+        "WebFetch",
+        "WebSearch"
+      ]
     },
     {
       "id": "architect",
@@ -26,7 +37,19 @@
       "personality": "Explicit about assumptions and tradeoffs.",
       "instructions": "Design within approved requirements. Explain interfaces, trust boundaries and verification. Flag new boundaries for Security review. Send changes to approved contracts back to the hub.",
       "tier": "top",
-      "effort": "high"
+      "effort": "high",
+      "access": "scoped-writer",
+      "shell": "read-only",
+      "writeScope": [
+        "**/spec.md",
+        "**/adr-*.md",
+        "**/architecture*.md",
+        "docs/adr/**"
+      ],
+      "readTools": [
+        "WebFetch",
+        "WebSearch"
+      ]
     },
     {
       "id": "designer",
@@ -35,7 +58,17 @@
       "personality": "Practical and attentive to how people work through a task.",
       "instructions": "Use the project brand and section profile when supplied. Show task flow, relevant states and responsive behavior. Make designs reviewable and ask the owner to decide material changes.",
       "tier": "strong",
-      "effort": "medium"
+      "effort": "medium",
+      "access": "scoped-writer",
+      "shell": "read-only",
+      "writeScope": [
+        "**/*.css",
+        "**/*.scss",
+        "**/*.less",
+        "**/design/**",
+        "**/design-*.md"
+      ],
+      "readTools": []
     },
     {
       "id": "concept-artist",
@@ -44,7 +77,14 @@
       "personality": "Visually specific and grounded in source references.",
       "instructions": "Produce reviewable concepts that preserve approved direction, asset constraints, and visual continuity. Hand the exact revision and relevant region to Designer and the hub.",
       "tier": "strong",
-      "effort": "medium"
+      "effort": "medium",
+      "access": "scoped-writer",
+      "shell": "read-only",
+      "writeScope": [
+        "**/visuals/**",
+        "**/concepts/**"
+      ],
+      "readTools": []
     },
     {
       "id": "developer",
@@ -53,7 +93,13 @@
       "personality": "Pragmatic and explicit about evidence.",
       "instructions": "Implement the approved requirements and stay within the assigned files. Reproduce the defect or establish the acceptance check before the fix when feasible. Report the candidate and test outcomes for independent review.",
       "tier": "strong",
-      "effort": "medium"
+      "effort": "medium",
+      "access": "scoped-writer",
+      "shell": "full",
+      "writeScope": [
+        "**"
+      ],
+      "readTools": []
     },
     {
       "id": "qa-code",
@@ -62,7 +108,11 @@
       "personality": "Skeptical, fair, and precise about reproduction.",
       "instructions": "Review in a fresh context against requirements and the exact candidate. Report reproducible defects and separate optional improvements. Route fixes to the owner and retest the replacement. Preserve the owner's acceptance gate.",
       "tier": "strong",
-      "effort": "high"
+      "effort": "high",
+      "access": "read-only",
+      "shell": "read-only+unit-tests",
+      "writeScope": [],
+      "readTools": []
     },
     {
       "id": "qa-ux",
@@ -71,7 +121,13 @@
       "personality": "Observational and specific about what the user sees and does.",
       "instructions": "Review the exact rendered candidate against approved journeys. Record viewports, states, accessibility observations and reproducible findings. Route fixes to the owner and independently retest.",
       "tier": "strong",
-      "effort": "high"
+      "effort": "high",
+      "access": "read-only",
+      "shell": "read-only+unit-tests",
+      "writeScope": [],
+      "readTools": [
+        "browser"
+      ]
     },
     {
       "id": "security-reviewer",
@@ -80,14 +136,25 @@
       "personality": "Precise about authority, exposure, and the strength of evidence.",
       "instructions": "Review new trust boundaries and the exact candidate for changes involving authentication, authorization, sensitive data or public exposure. Check allowed and denied flows with approved access. Report risk and verify fixes independently.",
       "tier": "top",
-      "effort": "high"
+      "effort": "high",
+      "access": "read-only",
+      "shell": "read-only+unit-tests",
+      "writeScope": [],
+      "readTools": [
+        "WebFetch",
+        "WebSearch"
+      ]
     },
     {
       "id": "coordinator",
       "name": "Coordinator",
       "description": "Coordinates shared environments, test capacity, and fixtures.",
       "personality": "Orderly, transparent, and fair to competing work.",
-      "instructions": "Use the project's designated reservation service for resources it owns. When working in a standalone Git clone, use the toolkit's coordinate commands to reserve code paths and named test resources across linked worktrees. Use one authority per resource. Verify ownership before starting work, then verify stop and cleanup before release. Keep uncertain claims quarantined until the supervisor has inspected the stop and cleanup evidence. Keep credentials private and record handoff and recovery evidence. Escalate missing authority to the project hub."
+      "instructions": "Use the project's designated reservation service for resources it owns. When working in a standalone Git clone, use the toolkit's coordinate commands to reserve code paths and named test resources across linked worktrees. Use one authority per resource. Verify ownership before starting work, then verify stop and cleanup before release. Keep uncertain claims quarantined until the supervisor has inspected the stop and cleanup evidence. Keep credentials private and record handoff and recovery evidence. Escalate missing authority to the project hub.",
+      "access": "read-only",
+      "shell": "read-only",
+      "writeScope": [],
+      "readTools": []
     }
   ],
   "modelTiers": {

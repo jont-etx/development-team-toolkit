@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -106,6 +106,47 @@ function modelTiers(config) {
   return Object.fromEntries(Object.entries(catalog.modelTiers).map(([runtime, tiers]) => [runtime, { ...tiers, ...override?.[runtime] }]));
 }
 
+// Role access: what each specialist may do. Projects override any field per role under `roles.<id>`.
+const ACCESS = ['read-only', 'scoped-writer'];
+const SHELLS = ['read-only', 'read-only+unit-tests', 'full'];
+const OVERRIDABLE = ['access', 'shell', 'writeScope', 'readTools', 'tier', 'effort'];
+const BROWSER_TOOLS = ['navigate', 'read_page', 'get_page_text', 'find', 'computer', 'form_input', 'javascript_tool',
+  'read_console_messages', 'read_network_requests', 'resize_window', 'tabs_context', 'tabs_create', 'tabs_select',
+  'tabs_close', 'browser_batch', 'preview_list', 'preview_logs'].map((name) => `mcp__Claude_Browser__${name}`);
+
+function effectiveRoles(config) {
+  const overrides = config?.roles ?? {};
+  const policy = config?.rolePolicy ?? {};
+  const strings = (value) => Array.isArray(value) && value.every((item) => typeof item === 'string' && item && item.length < 300);
+  if (typeof overrides !== 'object' || Array.isArray(overrides) || typeof policy !== 'object' || Array.isArray(policy)
+      || Object.keys(policy).some((key) => key !== 'linkedWorktreeOnly')
+      || (policy.linkedWorktreeOnly !== undefined && typeof policy.linkedWorktreeOnly !== 'boolean')) {
+    throw new Error('Project roles settings map a role id to its overrides; rolePolicy accepts linkedWorktreeOnly.');
+  }
+  for (const [id, fields] of Object.entries(overrides)) {
+    const role = catalog.roles.find((item) => item.id === id);
+    if (!role || role.id === 'pm' || !fields || typeof fields !== 'object' || Array.isArray(fields)
+        || Object.keys(fields).some((key) => !OVERRIDABLE.includes(key))
+        || (fields.access !== undefined && !ACCESS.includes(fields.access))
+        || (fields.shell !== undefined && !SHELLS.includes(fields.shell))
+        || (fields.writeScope !== undefined && !strings(fields.writeScope))
+        || (fields.readTools !== undefined && !strings(fields.readTools))
+        || (fields.tier !== undefined && !(fields.tier in catalog.modelTiers.codex))
+        || (fields.effort !== undefined && !['low', 'medium', 'high'].includes(fields.effort))) {
+      throw new Error(`Invalid role override for ${id}: use ${OVERRIDABLE.join(', ')} with known values.`);
+    }
+  }
+  return catalog.roles.filter((role) => role.id !== 'pm').map((role) => ({ ...role, ...overrides[role.id] }));
+}
+
+// Claude Code limits a subagent's tools in its profile; full-shell writers keep every tool and the guard scopes their writes.
+function claudeTools(role) {
+  if (role.access === 'scoped-writer' && role.shell === 'full') return undefined;
+  const tools = ['Read', 'Grep', 'Glob', 'Bash', ...(role.access === 'scoped-writer' ? ['Edit', 'Write'] : [])];
+  for (const extra of role.readTools ?? []) tools.push(...(extra === 'browser' ? BROWSER_TOOLS : [extra]));
+  return tools;
+}
+
 // Each runtime renders a role as [file name, generated body, optional file prefix before the marker].
 const runtimes = {
   codex: {
@@ -126,7 +167,8 @@ const runtimes = {
     modelPattern: /^(model: *)"?([^"\n]*?)"?$/m,
     render(role, tiers) {
       const fields = { name: `toolkit-${role.id}`, description: role.description, model: role.tier ? tiers[role.tier] : 'inherit' };
-      const header = Object.entries(fields).map(([key, value]) => `${key}: ${JSON.stringify(value)}\n`).join('');
+      const header = Object.entries(fields).map(([key, value]) => `${key}: ${JSON.stringify(value)}\n`).join('')
+        + (claudeTools(role) ? `tools: ${claudeTools(role).join(', ')}\n` : '');
       return [`toolkit-${role.id}.md`, `${header}---\n\n${instructions(role)}\n`, '---\n'];
     },
   },
@@ -238,7 +280,7 @@ async function syncAgents(runtime, config) {
   const { directory: parts, extension, render } = runtimes[runtime];
   const tiers = modelTiers(config)[runtime];
   const directory = join(project, ...parts);
-  const roles = catalog.roles.filter((role) => role.id !== 'pm').map((role) => render(role, tiers));
+  const roles = effectiveRoles(config).map((role) => render(role, tiers));
   const prefix = roles[0][2];
   const writes = [];
   for (const [name, body] of roles) {
@@ -265,7 +307,56 @@ async function syncAgents(runtime, config) {
   for (const { file, contents, present } of writes) {
     await writeFile(file, contents, { flag: present ? 'w' : 'wx' });
   }
-  return { revision: catalog.revision, roles: roles.length, updated: writes.length, removed, directory };
+  const policy = await writeRolePolicy(config);
+  if (runtime === 'codex' && await exists(join(projectDir, 'role-guard.mjs'))) await installGuardCopy();
+  return { revision: catalog.revision, roles: roles.length, updated: writes.length, removed, directory, policy };
+}
+
+// The guard reads one policy per clone from Git's common directory, so every linked worktree enforces the same rules.
+async function writeRolePolicy(config) {
+  let common;
+  try {
+    common = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      cwd: project, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return null; // not a Git checkout: no guard policy
+  }
+  const roles = {};
+  for (const role of effectiveRoles(config)) {
+    roles[`toolkit-${role.id}`] = { access: role.access, shell: role.shell, writeScope: role.writeScope ?? [], readTools: role.readTools ?? [] };
+  }
+  const file = join(common, 'development-team-role-policy.json');
+  await writeJson(file, { schemaVersion: 1, revision: catalog.revision,
+    linkedWorktreeOnly: config?.rolePolicy?.linkedWorktreeOnly === true, roles }, false);
+  return file;
+}
+
+// Codex plugins cannot ship hooks, so the project hook points at a stable copy of the guard that sync keeps current.
+async function installGuardCopy() {
+  await mkdir(projectDir, { recursive: true });
+  const target = join(projectDir, 'role-guard.mjs');
+  await copyFile(fileURLToPath(new URL('./role-guard.mjs', import.meta.url)), target);
+  return target;
+}
+
+async function installCodexHooks(config) {
+  const guard = await installGuardCopy();
+  const policy = await writeRolePolicy(config);
+  const file = join(project, '.codex', 'hooks.json');
+  const current = (await exists(file)) ? await readJson(file) : { hooks: {} };
+  if (!current || typeof current !== 'object' || (current.hooks !== undefined && (typeof current.hooks !== 'object' || Array.isArray(current.hooks)))) {
+    throw new Error(`Unreadable Codex hooks file: ${file}`);
+  }
+  const command = `node "${guard.split(sep).join('/')}"`;
+  const pre = ((current.hooks ??= {}).PreToolUse ??= []);
+  const installed = pre.some((entry) => entry?.hooks?.some((hook) => hook?.command === command));
+  if (!installed) {
+    pre.push({ matcher: '.*', hooks: [{ type: 'command', command, timeout: 10, statusMessage: 'Checking toolkit role access' }] });
+    await writeJson(file, current, false);
+  }
+  return { file, guard, policy, changed: !installed,
+    next: installed ? 'Already installed.' : 'Open Codex in this project, run /hooks and trust "Checking toolkit role access". Codex skips untrusted hooks.' };
 }
 
 // Checks a handoff written from toolkit-wiki/handoff-template.md: required sections, a real base commit, owned files, checks.
@@ -348,8 +439,8 @@ async function main([command, ...args]) {
   }
   const [input, wikiFlag, wikiPath, ...extra] = args;
   if (command === 'roles' && input === undefined) return catalog;
-  if (!['init', 'save', 'status', 'config', 'sync-codex', 'sync-claude'].includes(command)) {
-    throw new Error('Usage: toolkit.mjs roles | status | config | init <seed.json> [--wiki <path>] | save <settings.json> | sync-codex | sync-claude | models <check|retarget|eval> | handoff check <file> | coordinate <command>');
+  if (!['init', 'save', 'status', 'config', 'sync-codex', 'sync-claude', 'install-codex-hooks'].includes(command)) {
+    throw new Error('Usage: toolkit.mjs roles | status | config | init <seed.json> [--wiki <path>] | save <settings.json> | sync-codex | sync-claude | install-codex-hooks | models <check|retarget|eval> | handoff check <file> | coordinate <command>');
   }
   if (['init', 'save'].includes(command) ? !input : input !== undefined) throw new Error('Invalid project settings arguments.');
   if (wikiFlag !== undefined && (command !== 'init' || wikiFlag !== '--wiki' || !wikiPath || extra.length)) {
@@ -372,9 +463,11 @@ async function main([command, ...args]) {
   if (command === 'config') return config;
   if (command === 'sync-codex') return syncAgents('codex', config);
   if (command === 'sync-claude') return syncAgents('claude', config);
+  if (command === 'install-codex-hooks') return installCodexHooks(config);
   const updated = validateProject(await readJson(resolve(input)));
   if (updated.id !== config.id) throw new Error('Use the existing project id when updating project settings.');
   modelTiers(updated);
+  effectiveRoles(updated);
   await writeJson(store.file, updated, false);
   return { store: store.kind, file: store.file, initialized: true };
 }

@@ -14,7 +14,7 @@ From the project root or linked worktree, capture `node <plugin-root>/bin/toolki
 
 Only a designated supervisor may rotate supervision, quarantine a held claim, recover a lost capability, or withdraw an abandoned queued request. Quarantine keeps conflicting work blocked. Verify stop and fixture cleanup before recovery, then rotate the request credential and let the request claim again. Keep fixture definitions in project settings and sync from the configured project root. Wiki-backed settings use the project's existing wiki controls. Keep the live queue and credentials in private local state.
 
-Send the exact candidate and original acceptance checks to a fresh QA context. Run Security review on changes to a trust boundary. Keep review findings separate from human acceptance. Mark steps awaiting authorization or a supported host capability as pending.
+Each specialist is held to its role's access by a hook: reviewers are read-only and writers stay inside their write scope. Hand anything outside a role's scope to its owner rather than working around the guard. Send the exact candidate and original acceptance checks to a fresh QA context. Run Security review on changes to a trust boundary. Keep review findings separate from human acceptance. Mark steps awaiting authorization or a supported host capability as pending.
 
 Model mappings are platform-specific. Each specialist role names a capability tier (`top` or `strong`) and a reasoning effort; `modelTiers` in the role catalog maps each tier to a model per runtime, and project settings may override a tier under `models`. Preserve the configured assignments until the owner approves a change.
 
