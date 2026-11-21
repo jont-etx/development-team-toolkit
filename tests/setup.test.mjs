@@ -86,7 +86,7 @@ test('doctor reports each missing step with its fix, then passes once set up', a
 });
 
 test('the setup skill ships in the plugin skills folder both runtimes load', async () => {
-  const skill = await readFile(join(plugin, 'skills', 'setup', 'SKILL.md'), 'utf8');
+  const skill = (await readFile(join(plugin, 'skills', 'setup', 'SKILL.md'), 'utf8')).replaceAll('\r\n', '\n'); // Windows checkouts use CRLF
   assert.match(skill, /^---\nname: setup\n/);
   assert.equal(JSON.parse(await readFile(join(plugin, '.codex-plugin', 'plugin.json'), 'utf8')).skills, './skills');
 });
