@@ -4,6 +4,7 @@ import { copyFile, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFi
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { globRegex } from './role-guard.mjs';
 
 const toolkitWiki = await realpath(fileURLToPath(new URL('../toolkit-wiki/', import.meta.url)));
 const catalog = JSON.parse(await readFile(join(toolkitWiki, 'roles.json'), 'utf8'));
@@ -137,6 +138,19 @@ function effectiveRoles(config) {
     }
   }
   return catalog.roles.filter((role) => role.id !== 'pm').map((role) => ({ ...role, ...overrides[role.id] }));
+}
+
+// Cross-family review: work on hot paths (or all work) is reviewed by the other runtime's models.
+const RUNTIMES = ['codex', 'claude'];
+function reviewPolicy(config) {
+  const review = config?.review ?? {};
+  if (typeof review !== 'object' || Array.isArray(review) || Object.keys(review).some((key) => !['crossFamily', 'hotPaths'].includes(key))
+      || (review.crossFamily !== undefined && !['hot-paths', 'always', 'off'].includes(review.crossFamily))
+      || (review.hotPaths !== undefined && !(Array.isArray(review.hotPaths)
+        && review.hotPaths.every((path) => typeof path === 'string' && path && path.length < 300)))) {
+    throw new Error('Project review settings accept crossFamily (hot-paths, always or off) and hotPaths (a list of globs).');
+  }
+  return { crossFamily: review.crossFamily ?? 'hot-paths', hotPaths: review.hotPaths ?? [] };
 }
 
 // Claude Code limits a subagent's tools in its profile; full-shell writers keep every tool and the guard scopes their writes.
@@ -360,7 +374,7 @@ async function installCodexHooks(config) {
 }
 
 // Checks a handoff written from toolkit-wiki/handoff-template.md: required sections, a real base commit, owned files, checks.
-async function handoffCheck(file) {
+async function handoffCheck(file, config) {
   const text = cleanLines(await readFile(resolve(file), 'utf8')).replace(/<!--[\s\S]*?-->/g, '');
   const sections = {};
   for (const [, heading, body] of text.matchAll(/^## +(.+)\n([\s\S]*?)(?=^## |(?![\s\S]))/gm)) {
@@ -385,14 +399,30 @@ async function handoffCheck(file) {
   for (const path of bullets(sections['owned files']).map((item) => item.replaceAll('`', ''))) {
     if (isAbsolute(path) || path.split(/[\\/]/).includes('..')) problems.push(`Owned file "${path}" must be a repo-relative path.`);
   }
+  const warnings = [];
+  const review = reviewPolicy(config);
+  const owned = bullets(sections['owned files']).map((item) => item.replaceAll('`', '').replaceAll('\\', '/'));
+  const hot = review.hotPaths.map(globRegex);
+  const hotFiles = review.crossFamily === 'always' ? owned : review.crossFamily === 'off' ? [] : owned.filter((path) => hot.some((re) => re.test(path)));
+  if (hotFiles.length) {
+    const runtime = Object.fromEntries(bullets(sections.runtime).map((line) => line.split(/:\s*/, 2).map((part) => part.trim().toLowerCase())));
+    const pending = /cross-family review pending/i.test(sections.runtime ?? '');
+    const scope = review.crossFamily === 'always' ? 'this project' : `hot paths (${hotFiles.join(', ')})`;
+    if (!RUNTIMES.includes(runtime.built)) problems.push(`Cross-family review applies to ${scope}: name the builder in the "runtime" section (built: codex or claude).`);
+    else if (!RUNTIMES.includes(runtime.reviewed) || runtime.reviewed === runtime.built) {
+      if (pending) warnings.push('Cross-family review is pending: settle it, or get the owner to accept the degraded review, before release.');
+      else problems.push(`Cross-family review applies to ${scope}: the reviewer must use the other runtime than ${runtime.built} (reviewed: ${runtime.built === 'codex' ? 'claude' : 'codex'}), or mark "cross-family review pending" when it is unavailable.`);
+    }
+  }
   if (problems.length) process.exitCode = 1;
-  return { file, ok: !problems.length, problems };
+  return { file, ok: !problems.length, problems, warnings };
 }
 
 async function main([command, ...args]) {
   if (command === 'handoff') {
     if (args[0] !== 'check' || args.length !== 2) throw new Error('Usage: handoff check <handoff.md>');
-    return handoffCheck(args[1]);
+    const store = await settingsStore();
+    return handoffCheck(args[1], (await exists(store.file)) ? validateProject(await readJson(store.file)) : undefined);
   }
   if (command === 'coordinate') {
     if (args[0] === 'mcp') {
@@ -468,6 +498,7 @@ async function main([command, ...args]) {
   if (updated.id !== config.id) throw new Error('Use the existing project id when updating project settings.');
   modelTiers(updated);
   effectiveRoles(updated);
+  reviewPolicy(updated);
   await writeJson(store.file, updated, false);
   return { store: store.kind, file: store.file, initialized: true };
 }

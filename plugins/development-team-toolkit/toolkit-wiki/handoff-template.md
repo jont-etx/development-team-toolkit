@@ -26,6 +26,14 @@ Sections marked required must be filled; the check names any that are missing.
 
 <!-- required: the role or person who acts next, e.g. developer, qa-code, owner -->
 
+## Runtime
+
+<!-- required when the project's review policy applies (hot paths, or always): which runtime built the work and which reviewed it -->
+- built:
+- reviewed:
+
+<!-- if the other runtime is unavailable, add: "cross-family review pending: <runtime> unavailable" -->
+
 ## Evidence
 
 <!-- optional: links or paths to what supports the decision -->
