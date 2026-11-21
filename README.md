@@ -79,6 +79,7 @@ Wiki setup records the wiki path in `.development-team/wiki.json`. If the select
 | `node $toolkit sync-claude` | Creates or refreshes toolkit subagents under `.claude/agents/`, removes unedited subagents for retired roles, and stops on conflicting edits |
 | `node $toolkit models check [--record]` | Compares the Codex model catalog with the models used by tiers and project agent profiles, and flags unavailable or newly offered models |
 | `node $toolkit models retarget <codex\|claude> <from> <to>` | Moves hand-written project agent profiles from one model to another after an approved review |
+| `node $toolkit install-codex-hooks` | Installs the role guard as a Codex project hook; trust it once in Codex with `/hooks` |
 | `node $toolkit models eval ./eval.json` | Replays frozen tasks for each contender in throwaway worktrees and reports must-pass results per role |
 | `node $toolkit handoff check ./handoff.md` | Checks a handoff has a decision, a real base commit, repo-relative owned files, acceptance checks and a next owner |
 
@@ -105,6 +106,33 @@ Each role names a capability tier, and `modelTiers` in the role catalog maps tie
 For each task, contender and run, the harness checks out the base commit in a throwaway linked worktree, runs the contender there, runs every check, and removes the worktree. A run passes only when every check exits 0. The report gives pass counts and agent time per contender and role, plus each run's first failed check and changed-file count. Save it with the project's evidence. Contender commands run with your permissions, so write eval files yourself and keep them with the project. On Windows, bare command names such as `codex` or `npm` run through the shell and must use plain arguments; use an absolute executable path otherwise.
 
 Start each handoff from the [handoff template](plugins/development-team-toolkit/toolkit-wiki/handoff-template.md) and run `handoff check` before passing it on. The check exits 1 and lists what to fix.
+
+## Role access and the guard
+
+Each role in the catalog has an access level, and a hook enforces it while the specialist runs:
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `access` | `read-only`, `scoped-writer` | Read-only roles cannot change files. Scoped writers may write only paths matching `writeScope`. |
+| `shell` | `read-only`, `read-only+unit-tests`, `full` | Which shell commands the role may run. Limited shells allow reading commands such as `rg`, `git diff` and `git log`, plus unit-test runners for `read-only+unit-tests`. |
+| `writeScope` | glob list | Paths relative to the Git worktree root, such as `**/*.scss` or `docs/adr/**`. |
+| `readTools` | tool names, or `browser` | Extra read tools the role may use. |
+
+Defaults: QA Code, QA UX, Security Reviewer and Coordinator are read-only. Interviewer, Architect, Designer and Concept Artist write only their own kinds of files. Developer keeps a full shell and writes anywhere in the worktree. Override any role for one project under `roles` in the project settings, and set `rolePolicy.linkedWorktreeOnly` to keep writers out of the primary checkout:
+
+```json
+{
+  "roles": { "designer": { "writeScope": ["web/**/*.scss", "docs/design/**"] }, "qa-code": { "tier": "top" } },
+  "rolePolicy": { "linkedWorktreeOnly": true }
+}
+```
+
+`sync-claude` and `sync-codex` write the policy to `development-team-role-policy.json` in Git's common directory, so every linked worktree shares it, and `sync-claude` adds a tool allowlist to limited Claude profiles. The guard (`bin/role-guard.mjs`) runs before each tool call. It finds the specialist by the `agent_type` both runtimes send, matching `toolkit-designer` and Codex's display name alike. It never blocks the main session or roles the policy does not name, and it refuses any tool a limited role is not known to need.
+
+- **Claude Code:** the plugin installs the guard as a `PreToolUse` hook. Nothing else is needed.
+- **Codex:** plugins cannot ship hooks, so run `node $toolkit install-codex-hooks` once per project. It adds the hook to `.codex/hooks.json` and keeps a stable copy of the guard in `.development-team/`, which `sync-codex` refreshes. Then open Codex in the project, run `/hooks` and trust "Checking toolkit role access"; Codex silently skips untrusted hooks and asks again after any change to `hooks.json`.
+
+Limits: Codex ignores `sandbox_mode` in custom agent files (subagents inherit the parent sandbox), so the hook is the lock. `codex exec` does not print hook lines for subagent threads; check the subagent's session file under `~/.codex/sessions`. Full shells and unit-test runners can still run code that writes, and file claims or review still apply to them.
 
 ## Coordinate parallel work
 

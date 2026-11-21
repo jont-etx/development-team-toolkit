@@ -64,7 +64,9 @@ test('Claude Code subagents come from the same role catalog and keep project edi
   const architect = join(agents.directory, 'toolkit-architect.md');
   const contents = await readFile(architect, 'utf8');
   assert.match(contents, /^---\n# Development Team Toolkit generated content SHA256 [0-9a-f]{64}\nname: "toolkit-architect"\n/);
-  assert.match(contents, /\nmodel: "opus"\n---\n\nFollow the current project's instructions/);
+  assert.match(contents, /\nmodel: "opus"\ntools: Read, Grep, Glob, Bash, Edit, Write, WebFetch, WebSearch\n---\n\nFollow the current project's instructions/);
+  assert.match(await readFile(join(agents.directory, 'toolkit-qa-code.md'), 'utf8'), /\ntools: Read, Grep, Glob, Bash\n/);
+  assert.doesNotMatch(await readFile(join(agents.directory, 'toolkit-developer.md'), 'utf8'), /\ntools:/);
   assert.match(await readFile(join(agents.directory, 'toolkit-coordinator.md'), 'utf8'), /\nmodel: "inherit"\n/);
   assert.equal(existsSync(join(root, '.codex')), false);
   // A profile for a role the catalog dropped goes away unless someone edited it.

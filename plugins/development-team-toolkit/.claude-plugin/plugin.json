@@ -1,6 +1,6 @@
 {
   "name": "development-team-toolkit",
-  "version": "0.1.12",
+  "version": "0.2.0",
   "description": "Portable development team workflows and specialists.",
   "license": "Apache-2.0",
   "keywords": [
@@ -16,5 +16,19 @@
         "${CLAUDE_PLUGIN_ROOT}/bin/coordinator-mcp.mjs"
       ]
     }
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/role-guard.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }
