@@ -2,7 +2,7 @@
 // commits since the last tag, run the tests, then commit and tag. Pushing stays a separate, deliberate step.
 //   node scripts/release.mjs <version> [--dry-run]
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -45,7 +45,8 @@ function main([version, flag]) {
   const entry = releaseEntry(version, new Date().toISOString().slice(0, 10), subjects);
   if (flag === '--dry-run') return { version, from: current, since: last, entry };
 
-  const tests = spawnSync(process.execPath, ['--test', 'tests/'], { cwd: root, stdio: 'inherit' });
+  const suites = readdirSync(join(root, 'tests')).filter((name) => name.endsWith('.test.mjs')).map((name) => join('tests', name));
+  const tests = spawnSync(process.execPath, ['--test', ...suites], { cwd: root, stdio: 'inherit' });
   if (tests.status !== 0) throw new Error('Tests failed; nothing was changed.');
   manifests.forEach((manifest, i) => writeFileSync([files.claude, files.codex][i], `${JSON.stringify({ ...manifest, version }, null, 2)}\n`));
   const catalog = JSON.parse(readFileSync(files.catalog, 'utf8'));
