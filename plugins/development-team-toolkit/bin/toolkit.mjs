@@ -110,7 +110,7 @@ function modelTiers(config) {
 // Role access: what each specialist may do. Projects override any field per role under `roles.<id>`.
 const ACCESS = ['read-only', 'scoped-writer'];
 const SHELLS = ['read-only', 'read-only+unit-tests', 'full'];
-const OVERRIDABLE = ['access', 'shell', 'writeScope', 'readTools', 'tier', 'effort'];
+const OVERRIDABLE = ['enabled', 'access', 'shell', 'writeScope', 'readTools', 'tier', 'effort'];
 const BROWSER_TOOLS = ['navigate', 'read_page', 'get_page_text', 'find', 'computer', 'form_input', 'javascript_tool',
   'read_console_messages', 'read_network_requests', 'resize_window', 'tabs_context', 'tabs_create', 'tabs_select',
   'tabs_close', 'browser_batch', 'preview_list', 'preview_logs'].map((name) => `mcp__Claude_Browser__${name}`);
@@ -128,6 +128,7 @@ function effectiveRoles(config) {
     const role = catalog.roles.find((item) => item.id === id);
     if (!role || role.id === 'pm' || !fields || typeof fields !== 'object' || Array.isArray(fields)
         || Object.keys(fields).some((key) => !OVERRIDABLE.includes(key))
+        || (fields.enabled !== undefined && typeof fields.enabled !== 'boolean')
         || (fields.access !== undefined && !ACCESS.includes(fields.access))
         || (fields.shell !== undefined && !SHELLS.includes(fields.shell))
         || (fields.writeScope !== undefined && !strings(fields.writeScope))
@@ -137,7 +138,9 @@ function effectiveRoles(config) {
       throw new Error(`Invalid role override for ${id}: use ${OVERRIDABLE.join(', ')} with known values.`);
     }
   }
-  return catalog.roles.filter((role) => role.id !== 'pm').map((role) => ({ ...role, ...overrides[role.id] }));
+  // A role a project switches off gets no profile and no policy entry.
+  return catalog.roles.filter((role) => role.id !== 'pm' && overrides[role.id]?.enabled !== false)
+    .map((role) => ({ ...role, ...overrides[role.id] }));
 }
 
 // Cross-family review: work on hot paths (or all work) is reviewed by the other runtime's models.
@@ -300,7 +303,7 @@ function untouched(current, prefix) {
   return delimiter >= 0 && rest.slice(0, delimiter) === marker + hash(rest.slice(delimiter + 1));
 }
 
-async function syncAgents(runtime, config) {
+async function syncAgents(runtime, config, { dryRun = false } = {}) {
   const { directory: parts, extension, render } = runtimes[runtime];
   const tiers = modelTiers(config)[runtime];
   const directory = join(project, ...parts);
@@ -324,9 +327,10 @@ async function syncAgents(runtime, config) {
   for (const name of (await exists(directory)) ? await readdir(directory) : []) {
     if (!name.startsWith('toolkit-') || !name.endsWith(extension) || expected.has(name)) continue;
     if (!untouched(cleanLines(await readFile(join(directory, name), 'utf8')), prefix)) continue;
-    await rm(join(directory, name));
+    if (!dryRun) await rm(join(directory, name));
     removed.push(name);
   }
+  if (dryRun) return { stale: writes.map(({ file }) => relative(project, file)), removed };
   await mkdir(directory, { recursive: true });
   for (const { file, contents, present } of writes) {
     await writeFile(file, contents, { flag: present ? 'w' : 'wx' });
@@ -346,14 +350,94 @@ async function writeRolePolicy(config) {
   } catch {
     return null; // not a Git checkout: no guard policy
   }
+  const file = join(common, 'development-team-role-policy.json');
+  await writeJson(file, rolePolicy(config), false);
+  return file;
+}
+
+function rolePolicy(config) {
   const roles = {};
   for (const role of effectiveRoles(config)) {
     roles[`toolkit-${role.id}`] = { access: role.access, shell: role.shell, writeScope: role.writeScope ?? [], readTools: role.readTools ?? [] };
   }
-  const file = join(common, 'development-team-role-policy.json');
-  await writeJson(file, { schemaVersion: 1, revision: catalog.revision,
-    linkedWorktreeOnly: config?.rolePolicy?.linkedWorktreeOnly === true, roles }, false);
-  return file;
+  return { schemaVersion: 1, revision: catalog.revision, linkedWorktreeOnly: config?.rolePolicy?.linkedWorktreeOnly === true, roles };
+}
+
+// Checks a project's whole setup and says how to fix each problem. Read-only.
+async function doctor() {
+  const checks = [];
+  const add = (check, ok, detail, fix) => checks.push({ check, ok, detail, ...(ok ? {} : { fix }) });
+  const [major, minor] = process.versions.node.split('.').map(Number);
+  add('Node.js 22.13 or later', major > 22 || (major === 22 && minor >= 13), process.version, 'Install a current Node.js LTS.');
+  let common;
+  try {
+    common = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: project, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    add('Git checkout', true, common);
+  } catch {
+    add('Git checkout', false, 'not a Git repository', 'Run the toolkit from the project checkout.');
+  }
+  let config;
+  try {
+    const store = await settingsStore();
+    if (!(await exists(store.file))) {
+      add('Project settings', false, `not initialized (${store.kind})`, 'Run the setup skill, or init <seed.json>.');
+    } else {
+      config = validateProject(await readJson(store.file));
+      modelTiers(config); effectiveRoles(config); reviewPolicy(config); parallelPolicy(config);
+      add('Project settings', true, `${store.kind}: ${relative(project, store.file)}`);
+    }
+  } catch (error) {
+    add('Project settings', false, error.message, 'Fix the settings file, or rerun the setup skill.');
+  }
+  for (const runtime of ['claude', 'codex']) {
+    const name = runtime === 'claude' ? 'Claude Code profiles' : 'Codex profiles';
+    if (!(await exists(join(project, ...runtimes[runtime].directory)))) {
+      add(name, false, 'not generated', `Run sync-${runtime}.`);
+      continue;
+    }
+    try {
+      const { stale, removed } = await syncAgents(runtime, config, { dryRun: true });
+      add(name, !stale.length && !removed.length, stale.length || removed.length ? `${stale.length} missing or out of date, ${removed.length} retired` : 'in sync', `Run sync-${runtime}.`);
+    } catch (error) {
+      add(name, false, error.message, 'Move the edited profile aside or into project role overrides, then sync again.');
+    }
+  }
+  if (common) {
+    const file = join(common, 'development-team-role-policy.json');
+    let current = null;
+    try { current = await readJson(file); } catch { /* missing */ }
+    let wanted = null;
+    try { wanted = rolePolicy(config); } catch { /* settings already reported */ }
+    add('Role policy', Boolean(current) && JSON.stringify(current) === JSON.stringify(wanted),
+      current ? (JSON.stringify(current) === JSON.stringify(wanted) ? 'current' : 'out of date') : 'missing', 'Run sync-claude or sync-codex.');
+  }
+  add('Claude Code guard hook', true, `ships with the plugin (${catalog.revision}); active wherever the plugin is enabled`);
+  const hooksFile = join(project, '.codex', 'hooks.json');
+  const guardCopy = join(projectDir, 'role-guard.mjs');
+  const command = `node "${guardCopy.split(sep).join('/')}"`;
+  let entryIndex = -1;
+  try {
+    entryIndex = ((await readJson(hooksFile)).hooks?.PreToolUse ?? []).findIndex((entry) => entry?.hooks?.some((hook) => hook?.command === command));
+  } catch { /* missing */ }
+  add('Codex guard hook installed', entryIndex >= 0, entryIndex >= 0 ? relative(project, hooksFile) : 'not in .codex/hooks.json', 'Run install-codex-hooks.');
+  if (entryIndex >= 0) {
+    const same = (await exists(guardCopy)) && (await readFile(guardCopy, 'utf8')) === (await readFile(fileURLToPath(new URL('./role-guard.mjs', import.meta.url)), 'utf8'));
+    add('Codex guard copy current', same, same ? relative(project, guardCopy) : 'older than this toolkit', 'Run sync-codex or install-codex-hooks.');
+    const codexConfig = join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'config.toml');
+    const text = (await exists(codexConfig)) ? await readFile(codexConfig, 'utf8') : '';
+    const wantedKey = `${resolve(hooksFile)}:pre_tool_use:${entryIndex}:`.toLowerCase();
+    const trusted = [...text.matchAll(/^\[hooks\.state\.(?:'([^']+)'|"((?:[^"\\]|\\.)+)")\]\s*\ntrusted_hash/gm)]
+      .map((match) => (match[1] ?? match[2].replace(/\\\\/g, '\\')).toLowerCase())
+      .some((key) => key.startsWith(wantedKey));
+    add('Codex guard hook trusted', trusted, trusted ? 'trust record found' : 'no trust record',
+      'Open Codex in this project, run /hooks and trust "Checking toolkit role access". If Codex still says the hook needs review, trust it again.');
+  }
+  const otherStore = await exists(join(project, '.coordinator', 'state.sqlite3'));
+  add('No other Coordinator store', !otherStore, otherStore ? '.coordinator/state.sqlite3 exists, so the toolkit Coordinator refuses claims' : 'none found',
+    'Keep using that Coordinator, or retire its store deliberately.');
+  const ok = checks.every((item) => item.ok);
+  if (!ok) process.exitCode = 1;
+  return { ok, checks };
 }
 
 // Codex plugins cannot ship hooks, so the project hook points at a stable copy of the guard that sync keeps current.
@@ -434,6 +518,8 @@ async function main([command, ...args]) {
     const store = await settingsStore();
     return handoffCheck(args[1], (await exists(store.file)) ? validateProject(await readJson(store.file)) : undefined);
   }
+  if (command === 'doctor' && !args.length) return doctor();
+  if (command === 'setup' && args[0] === 'scan' && args.length === 1) return (await import('./setup-scan.mjs')).setupScan(project, catalog);
   if (command === 'worker') {
     const [action, name, ...rest] = args;
     const workers = await import('./workers.mjs');
@@ -502,7 +588,7 @@ async function main([command, ...args]) {
   const [input, wikiFlag, wikiPath, ...extra] = args;
   if (command === 'roles' && input === undefined) return catalog;
   if (!['init', 'save', 'status', 'config', 'sync-codex', 'sync-claude', 'install-codex-hooks'].includes(command)) {
-    throw new Error('Usage: toolkit.mjs roles | status | config | init <seed.json> [--wiki <path>] | save <settings.json> | sync-codex | sync-claude | install-codex-hooks | worker <start|status|finish> | models <check|retarget|eval> | handoff check <file> | coordinate <command>');
+    throw new Error('Usage: toolkit.mjs roles | status | config | init <seed.json> [--wiki <path>] | save <settings.json> | sync-codex | sync-claude | install-codex-hooks | doctor | setup scan | worker <start|status|finish> | models <check|retarget|eval> | handoff check <file> | coordinate <command>');
   }
   if (['init', 'save'].includes(command) ? !input : input !== undefined) throw new Error('Invalid project settings arguments.');
   if (wikiFlag !== undefined && (command !== 'init' || wikiFlag !== '--wiki' || !wikiPath || extra.length)) {
