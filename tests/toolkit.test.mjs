@@ -41,8 +41,8 @@ test('clean project uses local config and wiki-sourced native agent profiles', a
   assert.equal(run(root, ['config']).title, 'Updated');
   run(root, ['init', 'seed.json'], /already exist/);
   const agents = run(root, ['sync-codex']);
-  assert.equal(agents.roles, 9);
-  assert.equal(agents.updated, 9);
+  assert.equal(agents.roles, 11);
+  assert.equal(agents.updated, 11);
   assert.equal(run(root, ['sync-codex']).updated, 0);
   const interviewer = join(agents.directory, 'toolkit-interviewer.toml');
   assert.match(await readFile(interviewer, 'utf8'), /gpt-6\.2-sol/);
@@ -57,8 +57,8 @@ test('Claude Code subagents come from the same role catalog and keep project edi
   const root = await fixture(t);
   run(root, ['init', 'seed.json']);
   const agents = run(root, ['sync-claude']);
-  assert.equal(agents.roles, 9);
-  assert.equal(agents.updated, 9);
+  assert.equal(agents.roles, 11);
+  assert.equal(agents.updated, 11);
   assert.match(agents.directory, /[\\/]\.claude[\\/]agents$/);
   assert.equal(run(root, ['sync-claude']).updated, 0);
   const architect = join(agents.directory, 'toolkit-architect.md');
@@ -123,7 +123,7 @@ test('model tiers drive profiles, project overrides apply, and models check flag
   const settings = JSON.parse(await readFile(join(root, '.development-team', 'project.json')));
   await writeFile(join(root, 'models.settings.json'), JSON.stringify({ ...settings, models: { codex: { top: 'gpt-7-sol' }, claude: { strong: 'opus' } } }));
   run(root, ['save', 'models.settings.json']);
-  assert.equal(run(root, ['sync-codex']).updated, 3);
+  assert.equal(run(root, ['sync-codex']).updated, 4);
   assert.match(await readFile(join(agents.directory, 'toolkit-architect.toml'), 'utf8'), /model = "gpt-7-sol"/);
   assert.match(await readFile(join(agents.directory, 'toolkit-developer.toml'), 'utf8'), /model = "gpt-6\.1-terra"/);
   run(root, ['sync-claude']);
@@ -178,7 +178,7 @@ test('handoff check names missing sections, unknown commits and paths outside th
   run(root, ['handoff', 'check', fileURLToPath(new URL('toolkit-wiki/handoff-template.md', plugin))], /^$/);
   const handoff = (revision, owned) => `# Handoff\n\n## Decision\nD-1: ship it\n\n## Base revision\n${revision}\n\n## Owned files\n- ${owned}\n\n## Acceptance checks\n- node --test\n\n## Next owner\ndeveloper\n`;
   await writeFile(join(root, 'good.md'), handoff(base, '`src/app.js`'));
-  assert.deepEqual(run(root, ['handoff', 'check', 'good.md']), { file: 'good.md', ok: true, problems: [] });
+  assert.deepEqual(run(root, ['handoff', 'check', 'good.md']), { file: 'good.md', ok: true, problems: [], warnings: [] });
   await writeFile(join(root, 'bad.md'), handoff('abcdef1', '../outside'));
   const bad = spawnSync(process.execPath, [cli, 'handoff', 'check', 'bad.md'], { cwd: root, encoding: 'utf8' });
   assert.equal(bad.status, 1);
@@ -211,4 +211,30 @@ test('models eval replays tasks in throwaway worktrees and scores must-pass chec
   assert.equal(git(project, 'worktree', 'list', '--porcelain').split('\n').filter((line) => line.startsWith('worktree ')).length, 1);
   await writeFile(join(root, 'thin.json'), JSON.stringify({ contenders: { only: { command: ['x'] } }, tasks: [] }));
   run(project, ['models', 'eval', join(root, 'thin.json')], /at least two contenders/);
+});
+
+test('handoff check requires cross-family review on hot paths and accepts a marked pending review', async (t) => {
+  const root = await fixture(t);
+  git(root, 'init', '-q');
+  git(root, 'commit', '-q', '--allow-empty', '-m', 'base');
+  const base = git(root, 'rev-parse', '--short', 'HEAD');
+  await writeFile(join(root, 'seed.json'), JSON.stringify({ ...projectConfig, review: { hotPaths: ['src/billing/**'] } }));
+  run(root, ['init', 'seed.json']);
+  const handoff = (owned, runtime) => `# Handoff\n\n## Decision\nD-1\n\n## Base revision\n${base}\n\n## Owned files\n- ${owned}\n\n## Acceptance checks\n- npm test\n\n## Next owner\nqa-code\n\n## Runtime\n${runtime}\n`;
+  const check = async (owned, runtime) => {
+    await writeFile(join(root, 'h.md'), handoff(owned, runtime));
+    return JSON.parse(spawnSync(process.execPath, [cli, 'handoff', 'check', 'h.md'], { cwd: root, encoding: 'utf8' }).stdout);
+  };
+  assert.equal((await check('src/ui/a.js', '- built:\n- reviewed:')).ok, true); // not a hot path
+  assert.match((await check('src/billing/a.js', '- built:\n- reviewed:')).problems[0], /name the builder/);
+  assert.match((await check('src/billing/a.js', '- built: codex\n- reviewed: codex')).problems[0], /reviewed: claude/);
+  assert.equal((await check('src/billing/a.js', '- built: codex\n- reviewed: claude')).ok, true);
+  const pending = await check('src/billing/a.js', '- built: codex\n- reviewed: codex\n\ncross-family review pending: claude unavailable');
+  assert.equal(pending.ok, true);
+  assert.match(pending.warnings[0], /pending/);
+  await writeFile(join(root, 'bad.json'), JSON.stringify({ ...projectConfig, review: { crossFamily: 'sometimes' } }));
+  run(root, ['save', 'bad.json'], /crossFamily/);
+  await writeFile(join(root, 'off.json'), JSON.stringify({ ...projectConfig, review: { crossFamily: 'off', hotPaths: ['src/billing/**'] } }));
+  run(root, ['save', 'off.json']);
+  assert.equal((await check('src/billing/a.js', '- built:\n- reviewed:')).ok, true);
 });

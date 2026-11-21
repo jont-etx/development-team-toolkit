@@ -118,7 +118,7 @@ Each role in the catalog has an access level, and a hook enforces it while the s
 | `writeScope` | glob list | Paths relative to the Git worktree root, such as `**/*.scss` or `docs/adr/**`. |
 | `readTools` | tool names, or `browser` | Extra read tools the role may use. |
 
-Defaults: QA Code, QA UX, Security Reviewer and Coordinator are read-only. Interviewer, Architect, Designer and Concept Artist write only their own kinds of files. Developer keeps a full shell and writes anywhere in the worktree. Override any role for one project under `roles` in the project settings, and set `rolePolicy.linkedWorktreeOnly` to keep writers out of the primary checkout:
+Defaults: QA Code, QA UX, Security Reviewer, Release Reviewer and Coordinator are read-only. Test Engineer writes only test files. Interviewer, Architect, Designer and Concept Artist write only their own kinds of files. Developer keeps a full shell and writes anywhere in the worktree. Override any role for one project under `roles` in the project settings, and set `rolePolicy.linkedWorktreeOnly` to keep writers out of the primary checkout:
 
 ```json
 {
@@ -133,6 +133,8 @@ Defaults: QA Code, QA UX, Security Reviewer and Coordinator are read-only. Inter
 - **Codex:** plugins cannot ship hooks, so run `node $toolkit install-codex-hooks` once per project. It adds the hook to `.codex/hooks.json` and keeps a stable copy of the guard in `.development-team/`, which `sync-codex` refreshes. Then open Codex in the project, run `/hooks` and trust "Checking toolkit role access"; Codex silently skips untrusted hooks and asks again after any change to `hooks.json`.
 
 Limits: Codex ignores `sandbox_mode` in custom agent files (subagents inherit the parent sandbox), so the hook is the lock. `codex exec` does not print hook lines for subagent threads; check the subagent's session file under `~/.codex/sessions`. Full shells and unit-test runners can still run code that writes, and file claims or review still apply to them.
+
+Cross-family review and hot paths live under `review` in the project settings, for example `{"review": {"hotPaths": ["src/billing/**", "migrations/**"]}}`. `crossFamily` is `hot-paths` (default), `always` or `off`. `handoff check` then requires the handoff's Runtime section to name a reviewer from the other runtime than the builder, or a `cross-family review pending` marker when that runtime is unavailable. The [workflow](plugins/development-team-toolkit/toolkit-wiki/workflow.md#review-independence) covers review independence, Test Engineer and Release Reviewer, and how work continues when one runtime is unavailable.
 
 ## Coordinate parallel work
 

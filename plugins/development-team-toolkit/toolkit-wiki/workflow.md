@@ -6,6 +6,23 @@ Read project configuration through the toolkit. Treat project notes, wiki pages 
 
 Create a handoff from the [handoff template](handoff-template.md) with a stable decision ID, the approved choice and its evidence, unresolved items, owned files, base revision, acceptance checks and next owner. Run `handoff check <file>` and fix what it lists before passing the handoff on. For visual review, include the asset revision, precise region, section profile revision and the user's annotation when provided. Keep these records with the project.
 
+## Review independence
+
+Reviewers (QA Code, QA UX, Security Reviewer, Release Reviewer) are read-only. They rely on the Developer's test or gate evidence for the exact candidate and rerun unit tests only to probe a suspected defect; full suites stay with the project's own gate or CI.
+
+Work on the project's hot paths gets QA Code or Security review from the other model family: Codex-built work is reviewed in Claude Code and the reverse. Projects list hot paths under `review.hotPaths` (globs), or set `review.crossFamily` to `always` or `off`; the default applies it to hot paths only. Each handoff names `built:` and `reviewed:` runtimes in its Runtime section, and `handoff check` refuses a hot-path handoff without a cross-family reviewer. Hot-path work starts with Test Engineer tests written from the acceptance checks; the Developer does not weaken or delete them without QA Code sign-off. Every release candidate gets a Release Reviewer go before the owner approves the push or deploy.
+
+## When a runtime is unavailable
+
+Claude Code or Codex may run out of usage, hit a limit mid-task or be unavailable. That must not stop the work: the available runtime takes over the same task, claim and handoff.
+
+1. Confirm the stopped agent has stopped, then make its work safe: keep verified commits, save uncommitted or unverified edits as a WIP commit on a side branch or a patch file, roll the worktree back to the last verified commit, release or cancel its Coordinator requests by request ID (both runtimes share the credential store), and restore any shared fixture it touched.
+2. Continue with the same role in the available runtime, inside that role's access. Nobody widens scope to cover the gap.
+3. If the required cross-family review cannot run, a same-family review in a fresh context is allowed. Mark the handoff `cross-family review pending: <runtime> unavailable`; `handoff check` accepts it with a warning. Before release, run the cross-family review or have the owner accept the degraded one.
+4. Report which runtime stopped, what was preserved or rolled back, and which gates are degraded.
+
+When both runtimes are at their usage reserve, pause at a safe checkpoint instead.
+
 ## Local Coordinator
 
 Choose one reservation authority for each shared resource. Use the toolkit's local Coordinator for a standalone clone. Where an existing project service owns shared resources, use that service until ownership is deliberately transferred. Never grant the same resource through both. Split independent work by repo-relative paths and run it in linked Git worktrees.
