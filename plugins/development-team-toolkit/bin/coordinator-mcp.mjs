@@ -1,7 +1,8 @@
 // Coordinator MCP server over stdio (newline-delimited JSON-RPC). No dependencies beyond Node.js.
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { realpathSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { isAbsolute, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
@@ -9,12 +10,13 @@ const cli = fileURLToPath(new URL('./toolkit.mjs', import.meta.url));
 const pluginRoot = realpathSync(fileURLToPath(new URL('..', import.meta.url)));
 const protocolVersions = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const capabilityPattern = /^[0-9a-f]{64}$/;
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const fields = {
   status: [[], []],
   request: [['owner', 'resources'], []],
-  claim: [['id', 'capability'], []],
-  cancel: [['id', 'capability'], []],
-  release: [['id', 'capability'], ['cleanup_evidence']],
+  claim: [['id'], ['capability']],
+  cancel: [['id'], ['capability']],
+  release: [['id'], ['capability', 'cleanup_evidence']],
 };
 
 const tool = {
@@ -22,8 +24,9 @@ const tool = {
   description: [
     'Use the Development Team Toolkit queue for the project Git checkout.',
     'Pass project as the absolute path of the checkout you are working in.',
-    'status takes {}. request takes owner and resources (strings such as file:src/app or resource:browser-qa) and returns an id and a private capability.',
-    'claim, release and cancel take id and that capability. release can also take cleanup_evidence, a project-relative evidence file.',
+    'status takes {}. request takes owner and resources (strings such as file:src/app or resource:browser-qa) and returns an id; its private credential stays in local Git state, never in this result.',
+    'claim, release and cancel take that id. release can also take cleanup_evidence, a project-relative evidence file.',
+    'Pass capability only for a credential a supervisor issued during recovery.',
     'Supervisor operations use the local toolkit CLI.',
   ].join(' '),
   inputSchema: {
@@ -51,6 +54,24 @@ function projectDirectory(requested) {
     return resolved;
   }
   throw new Error('Pass project as the absolute path of the project Git checkout.');
+}
+
+// Request credentials live beside the Coordinator store, one file per request ID, so agents only handle IDs.
+function credentialFile(project, id) {
+  const common = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+    cwd: project, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
+  }).trim();
+  return join(common, 'development-team-credentials', id);
+}
+
+async function withStoredCredential(project, operation, payload) {
+  if (!['claim', 'cancel', 'release'].includes(operation) || !payload || typeof payload !== 'object' || payload.capability !== undefined) return payload;
+  if (!uuid.test(payload.id ?? '')) throw new Error('Invalid request ID.');
+  try {
+    return { ...payload, capability: (await readFile(credentialFile(project, payload.id), 'utf8')).trim() };
+  } catch {
+    throw new Error('No stored credential for this request. Pass the capability a supervisor issued.');
+  }
 }
 
 function commandFor(operation, payload) {
@@ -109,7 +130,16 @@ async function callTool(params) {
   if (params?.name !== tool.name) throw Object.assign(new Error(`Unknown tool: ${params?.name}`), { code: -32602 });
   const { operation, payload, project } = params.arguments ?? {};
   try {
-    const result = await runCli(projectDirectory(project), commandFor(operation, payload));
+    const directory = projectDirectory(project);
+    let result = await runCli(directory, commandFor(operation, await withStoredCredential(directory, operation, payload)));
+    if (operation === 'request') {
+      const file = credentialFile(directory, result.id);
+      await mkdir(join(file, '..'), { recursive: true });
+      await writeFile(file, `${result.capability}\n`, { flag: 'wx', mode: 0o600 });
+      const { capability, ...visible } = result;
+      result = { ...visible, credential: 'stored locally' };
+    }
+    if (['release', 'cancel'].includes(operation)) await rm(credentialFile(directory, payload.id), { force: true });
     const structuredContent = { operation, result };
     return { content: [{ type: 'text', text: JSON.stringify(structuredContent) }], structuredContent };
   } catch (error) {

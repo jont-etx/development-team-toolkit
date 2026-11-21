@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -50,17 +51,26 @@ test('plugin MCP server shares the CLI queue and needs no Python', async (t) => 
   assert.equal(missing.isError, true);
   assert.match(missing.content[0].text, /absolute path of the project/);
 
-  const first = (await call('request', { owner: 'mcp', resources: ['resource:runner'] })).structuredContent.result;
-  const auth = { id: first.id, capability: first.capability };
-  assert.equal((await call('claim', auth)).structuredContent.result.state, 'held');
+  // The credential stays in local Git state; the agent only ever sees the request ID.
+  const requested = await call('request', { owner: 'mcp', resources: ['resource:runner'] });
+  const first = requested.structuredContent.result;
+  assert.equal(first.capability, undefined);
+  assert.equal(first.credential, 'stored locally');
+  const stored = join(project, '.git', 'development-team-credentials', first.id);
+  const capability = (await readFile(stored, 'utf8')).trim();
+  assert.match(capability, /^[0-9a-f]{64}$/);
+  assert.ok(!JSON.stringify(requested).includes(capability));
+  assert.equal((await call('claim', { id: first.id })).structuredContent.result.state, 'held');
   const conflict = cliRun('coordinate', 'request', 'cli', 'resource:runner');
   const status = (await call('status', {})).structuredContent.result;
   assert.deepEqual(status, cliRun('coordinate', 'status'));
   assert.deepEqual(status.requests.map((entry) => entry.state), ['held', 'queued']);
-  assert.ok(!JSON.stringify(status).includes(first.capability));
+  assert.ok(!JSON.stringify(status).includes(capability));
   assert.equal((await call('handoff', {})).isError, true);
   assert.equal((await call('claim', { id: first.id, capability: '0'.repeat(64) })).isError, true);
-  assert.equal((await call('release', auth)).structuredContent.result.state, 'released');
+  assert.equal((await call('claim', { id: '../../x' })).isError, true);
+  assert.equal((await call('release', { id: first.id })).structuredContent.result.state, 'released');
+  assert.equal(existsSync(stored), false);
   assert.equal((await call('claim', { id: conflict.id, capability: conflict.capability })).structuredContent.result.state, 'held');
 
   // Claude Code exposes the project directory, so the project argument is optional there.

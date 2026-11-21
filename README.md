@@ -79,10 +79,32 @@ Wiki setup records the wiki path in `.development-team/wiki.json`. If the select
 | `node $toolkit sync-claude` | Creates or refreshes toolkit subagents under `.claude/agents/`, removes unedited subagents for retired roles, and stops on conflicting edits |
 | `node $toolkit models check [--record]` | Compares the Codex model catalog with the models used by tiers and project agent profiles, and flags unavailable or newly offered models |
 | `node $toolkit models retarget <codex\|claude> <from> <to>` | Moves hand-written project agent profiles from one model to another after an approved review |
+| `node $toolkit models eval ./eval.json` | Replays frozen tasks for each contender in throwaway worktrees and reports must-pass results per role |
+| `node $toolkit handoff check ./handoff.md` | Checks a handoff has a decision, a real base commit, repo-relative owned files, acceptance checks and a next owner |
 
 The toolkit wiki travels with the plugin. It holds the shared [role catalog](plugins/development-team-toolkit/toolkit-wiki/roles.json) and [workflow](plugins/development-team-toolkit/toolkit-wiki/workflow.md). Project settings, decisions, and evidence belong to the project. To pick up shared role changes, update the toolkit checkout and rerun `sync-codex` or `sync-claude` from the project.
 
 Each role names a capability tier, and `modelTiers` in the role catalog maps tiers to models for each runtime. To change a tier for one project, add a `models` object to the project settings, for example `{"models": {"codex": {"top": "<model>"}, "claude": {"strong": "opus"}}}`, save it, and rerun the sync. The [workflow](plugins/development-team-toolkit/toolkit-wiki/workflow.md#model-review) describes how to evaluate a new model before changing a tier.
+
+`models eval` automates the replay. An eval file names at least two contenders, each a command that reads the task prompt on standard input, and a fixed task list:
+
+```json
+{
+  "runs": 2,
+  "contenders": {
+    "champion": { "command": ["codex", "exec", "-m", "gpt-6.2-sol", "--sandbox", "workspace-write", "-"] },
+    "challenger": { "command": ["claude", "-p", "--model", "opus", "--permission-mode", "acceptEdits"] }
+  },
+  "tasks": [
+    { "id": "search-cache", "role": "developer", "base": "<commit>", "prompt": "<the original handoff>",
+      "checks": [["npm", "test"], ["npm", "run", "lint"]], "timeoutSeconds": 1800 }
+  ]
+}
+```
+
+For each task, contender and run, the harness checks out the base commit in a throwaway linked worktree, runs the contender there, runs every check, and removes the worktree. A run passes only when every check exits 0. The report gives pass counts and agent time per contender and role, plus each run's first failed check and changed-file count. Save it with the project's evidence. Contender commands run with your permissions, so write eval files yourself and keep them with the project. On Windows, bare command names such as `codex` or `npm` run through the shell and must use plain arguments; use an absolute executable path otherwise.
+
+Start each handoff from the [handoff template](plugins/development-team-toolkit/toolkit-wiki/handoff-template.md) and run `handoff check` before passing it on. The check exits 1 and lists what to fix.
 
 ## Coordinate parallel work
 
@@ -105,7 +127,7 @@ Use an absolute path for `$toolkit` when running from a linked worktree. Capture
 
 MCP is the tool interface Codex and Claude Code use to call the Coordinator. The plugin ships the server, so installing the plugin is the only setup: no Python, no per-project registration, and nothing to repair when the plugin updates. It runs on the same Node.js as the CLI, and the MCP server and local CLI call the same queue.
 
-The tool is `coordinator_call`. Codex starts plugin servers in the plugin folder, so pass `project` as the absolute path of the Git checkout you are working in. Claude Code tells the server its project directory, so `project` is optional there. The tool supports `status`, `request`, `claim`, `release` and `cancel`. Codex runs it without an approval prompt because it only changes the local queue for the checkout it is given; remove `default_tools_approval_mode` from the plugin's `.codex-mcp.json` to require approval. Use the local CLI for supervision and policy sync. A request capability appears in the MCP tool result and is needed for later calls. Use the private CLI flow where host tool records are unsuitable for capabilities.
+The tool is `coordinator_call`. Codex starts plugin servers in the plugin folder, so pass `project` as the absolute path of the Git checkout you are working in. Claude Code tells the server its project directory, so `project` is optional there. The tool supports `status`, `request`, `claim`, `release` and `cancel`. Codex runs it without an approval prompt because it only changes the local queue for the checkout it is given; remove `default_tools_approval_mode` from the plugin's `.codex-mcp.json` to require approval. Use the local CLI for supervision and policy sync. Agents handle only request IDs: the server keeps each request's private credential in a file under Git's common directory (`development-team-credentials/<id>`), uses it for `claim`, `release` and `cancel`, and deletes it on release or cancel. After a supervisor `recover`, pass the newly issued credential as `capability`; recovery credentials are issued through the CLI and stay out of the stored files.
 
 Projects with an existing Coordinator store at `.coordinator/state.sqlite3` keep their designated Coordinator: the toolkit's server and CLI refuse to grant claims there. Earlier toolkit versions offered `coordinate mcp install`; remove any `development-team-coordinator` entry it added to `.codex/config.toml` or `.mcp.json`.
 

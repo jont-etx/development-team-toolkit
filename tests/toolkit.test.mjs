@@ -161,3 +161,52 @@ test('detecting a new wiki does not silently migrate existing local project data
   run(root, ['save', 'update.json'], /local project config already exists/);
   assert.deepEqual(JSON.parse(await readFile(join(root, '.development-team', 'project.json'))), projectConfig);
 });
+
+function git(cwd, ...args) {
+  const result = spawnSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', ...args], { cwd, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim();
+}
+
+test('handoff check names missing sections, unknown commits and paths outside the repo', async (t) => {
+  const root = await fixture(t);
+  git(root, 'init', '-q');
+  git(root, 'commit', '-q', '--allow-empty', '-m', 'base');
+  const base = git(root, 'rev-parse', '--short', 'HEAD');
+  run(root, ['handoff', 'check', fileURLToPath(new URL('toolkit-wiki/handoff-template.md', plugin))], /^$/);
+  const handoff = (revision, owned) => `# Handoff\n\n## Decision\nD-1: ship it\n\n## Base revision\n${revision}\n\n## Owned files\n- ${owned}\n\n## Acceptance checks\n- node --test\n\n## Next owner\ndeveloper\n`;
+  await writeFile(join(root, 'good.md'), handoff(base, '`src/app.js`'));
+  assert.deepEqual(run(root, ['handoff', 'check', 'good.md']), { file: 'good.md', ok: true, problems: [] });
+  await writeFile(join(root, 'bad.md'), handoff('abcdef1', '../outside'));
+  const bad = spawnSync(process.execPath, [cli, 'handoff', 'check', 'bad.md'], { cwd: root, encoding: 'utf8' });
+  assert.equal(bad.status, 1);
+  assert.deepEqual(JSON.parse(bad.stdout).problems, ['Base revision abcdef1 is not a commit in this repository.', 'Owned file "../outside" must be a repo-relative path.']);
+  const empty = spawnSync(process.execPath, [cli, 'handoff', 'check', fileURLToPath(new URL('toolkit-wiki/handoff-template.md', plugin))], { cwd: root, encoding: 'utf8' });
+  assert.equal(JSON.parse(empty.stdout).problems.length, 5);
+});
+
+test('models eval replays tasks in throwaway worktrees and scores must-pass checks per contender', async (t) => {
+  const root = await fixture(t);
+  const project = join(root, 'project');
+  await mkdir(project);
+  git(project, 'init', '-q');
+  git(project, 'commit', '-q', '--allow-empty', '-m', 'base');
+  const base = git(project, 'rev-parse', 'HEAD');
+  // A stand-in agent: "good" writes the answer it was asked for, "lazy" does nothing.
+  const agent = join(root, 'agent.mjs');
+  await writeFile(agent, "import { writeFileSync } from 'node:fs';\nlet input = '';\nfor await (const chunk of process.stdin) input += chunk;\nif (process.argv[2] === 'good') writeFileSync('answer.txt', input.trim());\n");
+  const check = [process.execPath, '-e', "process.exit(require('fs').readFileSync('answer.txt','utf8')==='42'?0:1)"];
+  await writeFile(join(root, 'eval.json'), JSON.stringify({
+    runs: 2,
+    contenders: { champion: { command: [process.execPath, agent, 'good'] }, challenger: { command: [process.execPath, agent, 'lazy'] } },
+    tasks: [{ id: 'answer', role: 'developer', base, prompt: '42', checks: [check], timeoutSeconds: 60 }],
+  }));
+  const report = run(project, ['models', 'eval', join(root, 'eval.json')]);
+  assert.deepEqual(report.summary.champion.developer, { passed: 2, runs: 2, agentSeconds: report.summary.champion.developer.agentSeconds });
+  assert.equal(report.summary.challenger.developer.passed, 0);
+  assert.equal(report.results.length, 4);
+  assert.equal(report.results.find((result) => result.contender === 'champion').changedFiles, 1);
+  assert.equal(git(project, 'worktree', 'list', '--porcelain').split('\n').filter((line) => line.startsWith('worktree ')).length, 1);
+  await writeFile(join(root, 'thin.json'), JSON.stringify({ contenders: { only: { command: ['x'] } }, tasks: [] }));
+  run(project, ['models', 'eval', join(root, 'thin.json')], /at least two contenders/);
+});
