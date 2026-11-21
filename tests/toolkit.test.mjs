@@ -67,6 +67,12 @@ test('Claude Code subagents come from the same role catalog and keep project edi
   assert.match(contents, /\nmodel: "opus"\n---\n\nFollow the current project's instructions/);
   assert.match(await readFile(join(agents.directory, 'toolkit-coordinator.md'), 'utf8'), /\nmodel: "inherit"\n/);
   assert.equal(existsSync(join(root, '.codex')), false);
+  // A profile for a role the catalog dropped goes away unless someone edited it.
+  await writeFile(join(agents.directory, 'toolkit-retired.md'), contents);
+  await writeFile(join(agents.directory, 'toolkit-kept.md'), `${contents}project customization\n`);
+  assert.deepEqual(run(root, ['sync-claude']).removed, ['toolkit-retired.md']);
+  assert.equal(existsSync(join(agents.directory, 'toolkit-retired.md')), false);
+  assert.equal(existsSync(join(agents.directory, 'toolkit-kept.md')), true);
   await writeFile(architect, 'project customization\n', { flag: 'a' });
   run(root, ['sync-claude'], /conflicts with toolkit setup/);
   assert.match(await readFile(architect, 'utf8'), /project customization/);
@@ -84,7 +90,7 @@ test('model tiers drive profiles, project overrides apply, and models check flag
   assert.match(await readFile(join(agents.directory, 'toolkit-architect.toml'), 'utf8'), /model = "gpt-6\.2-sol"\nmodel_reasoning_effort = "high"/);
   await mkdir(join(root, '.claude', 'agents'), { recursive: true });
   const handWritten = join(root, '.claude', 'agents', 'team-architect.md');
-  await writeFile(handWritten, '---\nname: team-architect\nmodel: opus\n---\n\nKeep this text.\n');
+  await writeFile(handWritten, '---\r\nname: team-architect\r\nmodel: opus\r\n---\r\n\r\nKeep this text.\r\n');
   await mkdir(join(root, '.codex', 'agents'), { recursive: true });
   const codexHand = join(root, '.codex', 'agents', 'team-architect.toml');
   await writeFile(codexHand, 'name = "Team Architect"\nmodel = "gpt-5-old"\ndeveloper_instructions = "Keep this text."\n');
@@ -110,7 +116,7 @@ test('model tiers drive profiles, project overrides apply, and models check flag
   assert.equal(await readFile(codexHand, 'utf8'), 'name = "Team Architect"\nmodel = "gpt-7-sol"\ndeveloper_instructions = "Keep this text."\n');
   assert.deepEqual(run(root, ['models', 'retarget', 'codex', 'gpt-6.2-sol', 'gpt-7-sol', '--codex-catalog', catalog]).changed, []);
   run(root, ['models', 'retarget', 'claude', 'opus', 'sonnet']);
-  assert.equal(await readFile(handWritten, 'utf8'), '---\nname: team-architect\nmodel: "sonnet"\n---\n\nKeep this text.\n');
+  assert.equal(await readFile(handWritten, 'utf8'), '---\r\nname: team-architect\r\nmodel: "sonnet"\r\n---\r\n\r\nKeep this text.\r\n');
 
   const settings = JSON.parse(await readFile(join(root, '.development-team', 'project.json')));
   await writeFile(join(root, 'models.settings.json'), JSON.stringify({ ...settings, models: { codex: { top: 'gpt-7-sol' }, claude: { strong: 'opus' } } }));

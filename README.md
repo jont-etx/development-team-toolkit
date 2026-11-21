@@ -75,8 +75,8 @@ Wiki setup records the wiki path in `.development-team/wiki.json`. If the select
 | `node $toolkit config` | Prints the active project settings |
 | `node $toolkit save ./updated-settings.json` | Updates settings in the active store |
 | `node $toolkit roles` | Prints the shared roles, personalities, and Codex and Claude Code model mappings |
-| `node $toolkit sync-codex` | Creates or refreshes toolkit profiles under `.codex/agents/` and stops on conflicting edits |
-| `node $toolkit sync-claude` | Creates or refreshes toolkit subagents under `.claude/agents/` and stops on conflicting edits |
+| `node $toolkit sync-codex` | Creates or refreshes toolkit profiles under `.codex/agents/`, removes unedited profiles for retired roles, and stops on conflicting edits |
+| `node $toolkit sync-claude` | Creates or refreshes toolkit subagents under `.claude/agents/`, removes unedited subagents for retired roles, and stops on conflicting edits |
 | `node $toolkit models check [--record]` | Compares the Codex model catalog with the models used by tiers and project agent profiles, and flags unavailable or newly offered models |
 | `node $toolkit models retarget <codex\|claude> <from> <to>` | Moves hand-written project agent profiles from one model to another after an approved review |
 
@@ -109,7 +109,7 @@ The tool is `coordinator_call`. Codex starts plugin servers in the plugin folder
 
 Projects with an existing Coordinator store at `.coordinator/state.sqlite3` keep their designated Coordinator: the toolkit's server and CLI refuse to grant claims there. Earlier toolkit versions offered `coordinate mcp install`; remove any `development-team-coordinator` entry it added to `.codex/config.toml` or `.mcp.json`.
 
-`coordinate status` shows when each request was made and claimed, plus `age_seconds` in its current state, so a stalled holder or an abandoned queued request stands out. Requests created before toolkit 0.1.9 show no times.
+`coordinate status` shows when each request was made and claimed, plus `age_seconds` in its current state, so a stalled holder or an abandoned queued request stands out. Requests created before toolkit 0.1.9 show no times. Released and cancelled requests leave the queue a week after they were made, the next time someone files a request; `coordinate audit` keeps their release, cancel and withdrawal history.
 
 ### Recover a claim or hand off supervision
 
@@ -118,6 +118,7 @@ Before other participants use the Coordinator, the project owner initializes sup
 | Situation | Operation |
 | --- | --- |
 | A queued request lost its credential | Run `coordinate recover <id> <inspection-ref>` with the supervisor credential and a fresh request credential on separate stdin lines. The request keeps its queue position. |
+| A queued request is abandoned and nobody will claim it | Run `coordinate withdraw <id> <reason-ref>` with the supervisor credential on stdin. The request is cancelled in one step and later requests move up. |
 | A held request may still be running or may have left dirty state | Run `coordinate quarantine <id> <reason-ref>` with the supervisor credential on stdin. It still blocks conflicts and its old credential stops working. |
 | A quarantined worker has stopped and its fixture cleanup is verified | Run `coordinate recover <id> <stop-ref> [evidence.json]` with the supervisor credential and a fresh request credential on separate stdin lines. The request returns to its original queue position and must claim again. |
 | Another supervisor is taking over | Run `coordinate handoff <current-epoch>` with the current and successor supervisor credentials on separate stdin lines. The epoch advances atomically. Active workers keep their own credentials and the queue keeps its order. |

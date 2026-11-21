@@ -139,9 +139,10 @@ async function agentFiles(runtime) {
   const files = [];
   for (const name of (await readdir(directory)).filter((entry) => entry.endsWith(extension)).sort()) {
     const file = join(directory, name);
-    const text = cleanLines(await readFile(file, 'utf8'));
+    const raw = await readFile(file, 'utf8');
+    const text = cleanLines(raw);
     const match = text.match(modelPattern);
-    files.push({ file, text, model: match?.[2], generated: text.split('\n', 2).some((line) => line.startsWith(marker)) });
+    files.push({ file, text, crlf: raw.includes('\r\n'), model: match?.[2], generated: text.split('\n', 2).some((line) => line.startsWith(marker)) });
   }
   return files;
 }
@@ -217,42 +218,54 @@ async function modelsRetarget(runtime, from, to, options) {
     if (codex && !codex.known.includes(to)) throw new Error(`The Codex catalog does not offer ${to}.`);
   }
   const changed = [];
-  for (const { file, text, model, generated } of await agentFiles(runtime)) {
+  for (const { file, text, crlf, model, generated } of await agentFiles(runtime)) {
     if (generated || model !== from) continue;
     const updated = text.replace(runtimes[runtime].modelPattern, (_, key) => `${key}"${to}"`);
-    await writeFile(file, updated);
+    await writeFile(file, crlf ? updated.replaceAll('\n', '\r\n') : updated);
     changed.push(relative(project, file));
   }
   return { runtime, from, to, changed, note: 'Toolkit-generated profiles follow tiers: update project models settings, then rerun sync.' };
 }
 
+// True when the file is toolkit output nobody has edited since: its marker hash still matches its body.
+function untouched(current, prefix) {
+  const rest = current.startsWith(prefix) ? current.slice(prefix.length) : '';
+  const delimiter = rest.indexOf('\n');
+  return delimiter >= 0 && rest.slice(0, delimiter) === marker + hash(rest.slice(delimiter + 1));
+}
+
 async function syncAgents(runtime, config) {
-  const { directory: parts, render } = runtimes[runtime];
+  const { directory: parts, extension, render } = runtimes[runtime];
   const tiers = modelTiers(config)[runtime];
   const directory = join(project, ...parts);
+  const roles = catalog.roles.filter((role) => role.id !== 'pm').map((role) => render(role, tiers));
+  const prefix = roles[0][2];
   const writes = [];
-  for (const role of catalog.roles) {
-    if (role.id === 'pm') continue;
-    const [name, body, prefix] = render(role, tiers);
+  for (const [name, body] of roles) {
     const file = join(directory, name);
     const contents = `${prefix}${marker}${hash(body)}\n${body}`;
     const present = await exists(file);
     if (present) {
       const current = cleanLines(await readFile(file, 'utf8'));
       if (current === contents) continue;
-      const rest = current.startsWith(prefix) ? current.slice(prefix.length) : '';
-      const delimiter = rest.indexOf('\n');
-      if (delimiter < 0 || rest.slice(0, delimiter) !== marker + hash(rest.slice(delimiter + 1))) {
-        throw new Error(`Custom agent file conflicts with toolkit setup: ${file}`);
-      }
+      if (!untouched(current, prefix)) throw new Error(`Custom agent file conflicts with toolkit setup: ${file}`);
     }
     writes.push({ file, contents, present });
+  }
+  // Unedited toolkit profiles for roles the catalog no longer has are removed; edited ones stay.
+  const expected = new Set(roles.map(([name]) => name));
+  const removed = [];
+  for (const name of (await exists(directory)) ? await readdir(directory) : []) {
+    if (!name.startsWith('toolkit-') || !name.endsWith(extension) || expected.has(name)) continue;
+    if (!untouched(cleanLines(await readFile(join(directory, name), 'utf8')), prefix)) continue;
+    await rm(join(directory, name));
+    removed.push(name);
   }
   await mkdir(directory, { recursive: true });
   for (const { file, contents, present } of writes) {
     await writeFile(file, contents, { flag: present ? 'w' : 'wx' });
   }
-  return { revision: catalog.revision, roles: catalog.roles.length - 1, updated: writes.length, directory };
+  return { revision: catalog.revision, roles: roles.length, updated: writes.length, removed, directory };
 }
 
 async function main([command, ...args]) {
