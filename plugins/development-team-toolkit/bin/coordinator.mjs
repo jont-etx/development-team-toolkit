@@ -143,6 +143,7 @@ function requireAuthority(db, capability) {
 }
 
 const now = () => new Date().toISOString();
+const pruneAfterMs = 7 * 86400000;
 
 // Seconds in the current state, so a stalled holder or abandoned queued request stands out.
 function age(row) {
@@ -237,13 +238,13 @@ export async function coordinate(args, { loadPolicy } = {}) {
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }
-  if (!['request', 'claim', 'release', 'cancel', 'status', 'audit', 'authority-init', 'handoff', 'quarantine', 'recover', 'policy-sync'].includes(command)) {
-    throw new Error('Usage: coordinator request|claim|release|cancel|status|audit|authority-init|handoff|quarantine|recover|policy-sync');
+  if (!['request', 'claim', 'release', 'cancel', 'status', 'audit', 'authority-init', 'handoff', 'quarantine', 'recover', 'withdraw', 'policy-sync'].includes(command)) {
+    throw new Error('Usage: coordinator request|claim|release|cancel|status|audit|authority-init|handoff|quarantine|recover|withdraw|policy-sync');
   }
-  const counts = { status: [0], audit: [0], 'authority-init': [0], 'policy-sync': [0], handoff: [1], quarantine: [2], recover: [2, 3], claim: [1], release: [1, 2], cancel: [1] };
+  const counts = { status: [0], audit: [0], 'authority-init': [0], 'policy-sync': [0], handoff: [1], quarantine: [2], recover: [2, 3], withdraw: [2], claim: [1], release: [1, 2], cancel: [1] };
   if (counts[command] && !counts[command].includes(values.length)) throw new Error('Invalid Coordinator arguments.');
   const secretCount = ['handoff', 'recover'].includes(command) ? 2
-    : ['authority-init', 'policy-sync', 'quarantine', 'claim', 'release', 'cancel'].includes(command) ? 1 : 0;
+    : ['authority-init', 'policy-sync', 'quarantine', 'withdraw', 'claim', 'release', 'cancel'].includes(command) ? 1 : 0;
   const secrets = secretCount ? await readCapabilities(secretCount) : [];
   const [capability, nextCapability] = secrets;
   let owner;
@@ -315,9 +316,23 @@ export async function coordinate(args, { loadPolicy } = {}) {
         const id = randomUUID();
         const capability = randomBytes(32).toString('hex');
         reserveCapability(db, capability);
+        // Finished requests leave the queue after a week; the audit log keeps their history.
+        db.prepare("DELETE FROM coordinator_requests WHERE state IN ('released', 'cancelled') AND (requested_at IS NULL OR requested_at < ?)")
+          .run(new Date(Date.now() - pruneAfterMs).toISOString());
         db.prepare('INSERT INTO coordinator_requests (id, capability_hash, owner, resources, state, requested_at) VALUES (?, ?, ?, ?, ?, ?)')
           .run(id, hash(capability), owner, JSON.stringify(resources), 'queued', now());
         return { id, capability, state: 'queued' };
+      }
+      if (command === 'withdraw') {
+        requireAuthority(db, capability);
+        if (!uuid.test(values[0] ?? '')) throw new Error('Invalid request ID.');
+        const row = db.prepare('SELECT state FROM coordinator_requests WHERE id = ?').get(values[0]);
+        if (!row) throw new Error('Unknown request.');
+        if (row.state !== 'queued') throw new Error('Only queued requests can be withdrawn. Quarantine held requests instead.');
+        const stopRef = safeRef(values[1], 'withdrawal reference');
+        db.prepare("UPDATE coordinator_requests SET state = 'cancelled' WHERE id = ?").run(values[0]);
+        audit(db, 'withdraw', values[0], { stopRef });
+        return { state: 'cancelled' };
       }
       if (command === 'quarantine' || command === 'recover') {
         requireAuthority(db, capability);
@@ -363,6 +378,7 @@ export async function coordinate(args, { loadPolicy } = {}) {
       }
       if (row.state !== 'queued') throw new Error('Only queued requests can be cancelled.');
       db.prepare("UPDATE coordinator_requests SET state = 'cancelled' WHERE id = ?").run(row.id);
+      audit(db, 'cancel', row.id, {});
       return { state: 'cancelled' };
     });
   } finally {

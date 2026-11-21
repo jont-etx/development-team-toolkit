@@ -200,6 +200,33 @@ test('wiki fixture policy survives handoff and requires matching cleanup evidenc
   assert.ok(audit.events.some((event) => event.event === 'recover' && event.request_id === holder.id));
 });
 
+test('supervisor withdraws an abandoned queued request in one step and finished requests are pruned', async (t) => {
+  const { project, worktree } = await fixture(t);
+  await command(project, ['authority-init'], supervisor);
+  const holder = await request(project, 'holder', 'resource:runner');
+  const abandoned = await request(worktree, 'abandoned', 'resource:runner');
+  const next = await request(project, 'next', 'resource:runner');
+  await act(project, 'claim', holder);
+  await denied(project, ['withdraw', holder.id, 'lost-credential'], supervisor);
+  await denied(project, ['withdraw', abandoned.id, 'lost-credential'], successor);
+  assert.equal((await command(project, ['withdraw', abandoned.id, 'lost-credential'], supervisor)).state, 'cancelled');
+  await denied(worktree, ['claim', abandoned.id], abandoned.capability);
+  await act(project, 'release', holder);
+  assert.equal((await act(project, 'claim', next)).state, 'held');
+  const events = (await command(project, ['audit'])).events;
+  assert.deepEqual(events.find((event) => event.event === 'withdraw').detail, { stopRef: 'lost-credential' });
+
+  // Age the finished requests past the one-week window; the next request prunes them.
+  const { DatabaseSync } = await import('node:sqlite');
+  const db = new DatabaseSync(join(project, '.git', 'development-team-coordinator.sqlite'));
+  db.prepare("UPDATE coordinator_requests SET requested_at = '2020-01-01T00:00:00.000Z' WHERE state != 'held'").run();
+  db.close();
+  await request(project, 'later', 'resource:other');
+  const remaining = (await command(project, ['status'])).requests.map((entry) => entry.owner);
+  assert.deepEqual(remaining, ['next', 'later']);
+  assert.ok((await command(project, ['audit'])).events.some((event) => event.event === 'release' && event.request_id === holder.id));
+});
+
 test('a delayed policy load cannot replace a newer synchronized policy', async (t) => {
   const { root, project, config } = await fixture(t);
   await command(project, ['authority-init'], supervisor);
