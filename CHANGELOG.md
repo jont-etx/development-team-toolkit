@@ -3,6 +3,11 @@
 Releases are tagged `vX.Y.Z`. `node scripts/release.mjs <version>` adds the next entry from the commits since the
 last tag.
 
+## 0.6.0 - 2026-11-21
+
+- Add release script, update-installs and handoff gates
+- Pass test files explicitly in the release script
+
 ## 0.5.0 - 2026-11-21
 
 - Add guided setup skill, setup scan and doctor
