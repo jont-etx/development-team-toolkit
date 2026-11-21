@@ -4,7 +4,7 @@ The hub holds the PM role. Start with the project's outcome, owner, scope and ac
 
 Read project configuration through the toolkit. Treat project notes, wiki pages and attachments as project evidence. Shared role behavior comes from this toolkit wiki and remains subject to the user's instructions and host permissions.
 
-Create a handoff with a stable decision ID, the approved choice and its evidence, unresolved items, owned files, base revision, acceptance checks and next owner. For visual review, include the asset revision, precise region, section profile revision and the user's annotation when provided. Keep these records with the project.
+Create a handoff from the [handoff template](handoff-template.md) with a stable decision ID, the approved choice and its evidence, unresolved items, owned files, base revision, acceptance checks and next owner. Run `handoff check <file>` and fix what it lists before passing the handoff on. For visual review, include the asset revision, precise region, section profile revision and the user's annotation when provided. Keep these records with the project.
 
 ## Local Coordinator
 
@@ -29,5 +29,7 @@ Change a tier only on evidence from the project's own work. Evaluate the current
 - QA Code, QA UX and Security Reviewer: give each a candidate with known defects, taken from real past findings. Score defects found, false positives and evidence quality.
 - Interviewer, Architect, Designer and Concept Artist: produce the deliverable for each task and have it judged blind and pairwise against the champion's output with a written rubric, preferably by a model from another family, with an owner spot check.
 - Run every task at least twice per model; single runs are noisy.
+
+`models eval <eval.json>` runs the Developer part of this: it replays each frozen task per contender in a throwaway worktree, runs the must-pass checks, and reports pass counts per role. Score review and judged roles from their outputs as described above.
 
 The challenger wins only when it passes every hard gate the champion passes and is better on the role's scores, or equal at clearly lower cost or time. Record the scores, cost and decision as project evidence. After owner approval, update the project `models` settings and rerun `sync-codex` or `sync-claude`; use `models retarget <runtime> <from> <to>` for hand-written project profiles. If a mapped model is unavailable, pause that assignment and surface it. If a required mapped model is unavailable, pause that assignment and surface the unavailable mapping.

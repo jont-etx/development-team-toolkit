@@ -268,7 +268,41 @@ async function syncAgents(runtime, config) {
   return { revision: catalog.revision, roles: roles.length, updated: writes.length, removed, directory };
 }
 
+// Checks a handoff written from toolkit-wiki/handoff-template.md: required sections, a real base commit, owned files, checks.
+async function handoffCheck(file) {
+  const text = cleanLines(await readFile(resolve(file), 'utf8')).replace(/<!--[\s\S]*?-->/g, '');
+  const sections = {};
+  for (const [, heading, body] of text.matchAll(/^## +(.+)\n([\s\S]*?)(?=^## |(?![\s\S]))/gm)) {
+    sections[heading.trim().toLowerCase()] = body.trim();
+  }
+  const bullets = (body) => (body ?? '').split('\n').map((line) => line.match(/^\s*[-*] +(.*\S)/)?.[1]).filter(Boolean);
+  const problems = [];
+  for (const name of ['decision', 'base revision', 'owned files', 'acceptance checks', 'next owner']) {
+    if (!sections[name] || (['owned files', 'acceptance checks'].includes(name) && !bullets(sections[name]).length)) {
+      problems.push(`Fill the "${name}" section.`);
+    }
+  }
+  const base = sections['base revision']?.split(/\s/, 1)[0].replaceAll('`', '');
+  if (base && !/^[0-9a-f]{7,40}$/i.test(base)) problems.push(`Base revision "${base}" is not a commit hash.`);
+  else if (base) {
+    try {
+      execFileSync('git', ['cat-file', '-e', `${base}^{commit}`], { cwd: project, stdio: 'ignore' });
+    } catch {
+      problems.push(`Base revision ${base} is not a commit in this repository.`);
+    }
+  }
+  for (const path of bullets(sections['owned files']).map((item) => item.replaceAll('`', ''))) {
+    if (isAbsolute(path) || path.split(/[\\/]/).includes('..')) problems.push(`Owned file "${path}" must be a repo-relative path.`);
+  }
+  if (problems.length) process.exitCode = 1;
+  return { file, ok: !problems.length, problems };
+}
+
 async function main([command, ...args]) {
+  if (command === 'handoff') {
+    if (args[0] !== 'check' || args.length !== 2) throw new Error('Usage: handoff check <handoff.md>');
+    return handoffCheck(args[1]);
+  }
   if (command === 'coordinate') {
     if (args[0] === 'mcp') {
       throw new Error('The Coordinator MCP server ships with the plugin in Codex and Claude Code; no setup is needed.');
@@ -309,12 +343,13 @@ async function main([command, ...args]) {
     const config = (await exists(store.file)) ? validateProject(await readJson(store.file)) : undefined;
     if (action === 'check' && !positional.length) return modelsCheck(config, options);
     if (action === 'retarget' && positional.length === 3) return modelsRetarget(...positional, options);
-    throw new Error('Usage: models check [--record] | models retarget <codex|claude> <from-model> <to-model> [--codex-catalog <file>]');
+    if (action === 'eval' && positional.length === 1) return (await import('./eval.mjs')).modelsEval(project, resolve(positional[0]));
+    throw new Error('Usage: models check [--record] | models retarget <codex|claude> <from-model> <to-model> [--codex-catalog <file>] | models eval <spec.json>');
   }
   const [input, wikiFlag, wikiPath, ...extra] = args;
   if (command === 'roles' && input === undefined) return catalog;
   if (!['init', 'save', 'status', 'config', 'sync-codex', 'sync-claude'].includes(command)) {
-    throw new Error('Usage: toolkit.mjs roles | status | config | init <seed.json> [--wiki <path>] | save <settings.json> | sync-codex | sync-claude | models <check|retarget> | coordinate <command>');
+    throw new Error('Usage: toolkit.mjs roles | status | config | init <seed.json> [--wiki <path>] | save <settings.json> | sync-codex | sync-claude | models <check|retarget|eval> | handoff check <file> | coordinate <command>');
   }
   if (['init', 'save'].includes(command) ? !input : input !== undefined) throw new Error('Invalid project settings arguments.');
   if (wikiFlag !== undefined && (command !== 'init' || wikiFlag !== '--wiki' || !wikiPath || extra.length)) {
