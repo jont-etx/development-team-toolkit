@@ -30,6 +30,10 @@ claude plugin install development-team-toolkit@development-team-private
 
 ## Set up a project
 
+**Guided setup (recommended).** In Claude Code run `/development-team-toolkit:setup`; in Codex ask for the toolkit's `setup` skill. It scans the repository (`setup scan`), interviews you one decision at a time with a recommended answer for each (roles, write scopes, cross-family review and hot paths, parallel workers, model tiers), shows the settings before writing them, then syncs both runtimes, installs the Codex guard hook and checks everything with `doctor`. Run it again later to change one part; it shows a before/after diff.
+
+**Manual setup.**
+
 1. Open a terminal in the **project** root. Create a seed file such as `team-seed.json`:
 
    ```json
@@ -81,6 +85,8 @@ Wiki setup records the wiki path in `.development-team/wiki.json`. If the select
 | `node $toolkit models retarget <codex\|claude> <from> <to>` | Moves hand-written project agent profiles from one model to another after an approved review |
 | `node $toolkit worker start <name> <files>... [--resource resource:<name>]` | Reserves a worker's files (and named resources) through the Coordinator and creates its linked worktree under `.worktrees/` |
 | `node $toolkit worker status` / `worker finish <name>` | Lists workers; finishes one by refusing undeclared changes, fast-forwarding it into its branch and releasing its reservation |
+| `node $toolkit doctor` | Checks Node, settings, generated profiles, the role policy and the Codex hook (installed, current and trusted), with a fix for each problem |
+| `node $toolkit setup scan` | Read-only repository scan used by the setup skill: file types, hot-path candidates and how many files each role's default write scope covers |
 | `node $toolkit install-codex-hooks` | Installs the role guard as a Codex project hook; trust it once in Codex with `/hooks` |
 | `node $toolkit models eval ./eval.json` | Replays frozen tasks for each contender in throwaway worktrees and reports must-pass results per role |
 | `node $toolkit handoff check ./handoff.md` | Checks a handoff has a decision, a real base commit, repo-relative owned files, acceptance checks and a next owner |
@@ -120,7 +126,7 @@ Each role in the catalog has an access level, and a hook enforces it while the s
 | `writeScope` | glob list | Paths relative to the Git worktree root, such as `**/*.scss` or `docs/adr/**`. |
 | `readTools` | tool names, or `browser` | Extra read tools the role may use. |
 
-Defaults: QA Code, QA UX, Security Reviewer, Release Reviewer and Coordinator are read-only. Test Engineer writes only test files. Interviewer, Architect, Designer and Concept Artist write only their own kinds of files. Developer keeps a full shell and writes anywhere in the worktree. Override any role for one project under `roles` in the project settings, and set `rolePolicy.linkedWorktreeOnly` to keep writers out of the primary checkout:
+Defaults: QA Code, QA UX, Security Reviewer, Release Reviewer and Coordinator are read-only. Test Engineer writes only test files. Interviewer, Architect, Designer and Concept Artist write only their own kinds of files. Developer keeps a full shell and writes anywhere in the worktree. Override any role for one project under `roles` in the project settings (`enabled: false` switches a role off), and set `rolePolicy.linkedWorktreeOnly` to keep writers out of the primary checkout:
 
 ```json
 {

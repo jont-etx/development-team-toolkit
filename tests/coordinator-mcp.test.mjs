@@ -63,7 +63,9 @@ test('plugin MCP server shares the CLI queue and needs no Python', async (t) => 
   assert.equal((await call('claim', { id: first.id })).structuredContent.result.state, 'held');
   const conflict = cliRun('coordinate', 'request', 'cli', 'resource:runner');
   const status = (await call('status', {})).structuredContent.result;
-  assert.deepEqual(status, cliRun('coordinate', 'status'));
+  // age_seconds can tick between the two reads, so compare everything else.
+  const ageless = (snapshot) => ({ ...snapshot, requests: snapshot.requests.map(({ age_seconds: _, ...rest }) => rest) });
+  assert.deepEqual(ageless(status), ageless(cliRun('coordinate', 'status')));
   assert.deepEqual(status.requests.map((entry) => entry.state), ['held', 'queued']);
   assert.ok(!JSON.stringify(status).includes(capability));
   assert.equal((await call('handoff', {})).isError, true);
