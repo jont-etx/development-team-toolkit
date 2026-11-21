@@ -87,6 +87,7 @@ Wiki setup records the wiki path in `.development-team/wiki.json`. If the select
 | `node $toolkit worker status` / `worker finish <name>` | Lists workers; finishes one by refusing undeclared changes, fast-forwarding it into its branch and releasing its reservation |
 | `node $toolkit doctor` | Checks Node, settings, generated profiles, the role policy and the Codex hook (installed, current and trusted), with a fix for each problem |
 | `node $toolkit setup scan` | Read-only repository scan used by the setup skill: file types, hot-path candidates and how many files each role's default write scope covers |
+| `node $toolkit update-installs [--ref <sha>]` | After a release: re-pins Codex to the latest `main` (or the given commit) and refreshes the Codex and Claude Code installs. Close the Codex app first; it locks the old plugin folder |
 | `node $toolkit install-codex-hooks` | Installs the role guard as a Codex project hook; trust it once in Codex with `/hooks` |
 | `node $toolkit models eval ./eval.json` | Replays frozen tasks for each contender in throwaway worktrees and reports must-pass results per role |
 | `node $toolkit handoff check ./handoff.md` | Checks a handoff has a decision, a real base commit, repo-relative owned files, acceptance checks and a next owner |
@@ -212,6 +213,10 @@ Project settings can live in the project wiki. Live grants, credentials, queues,
 Projects with a live Coordinator keep it as the authority for its existing resources. The clean-repo handoff rotates supervision on the toolkit store. Before a live switch, reconcile active work and queue order, verify environment and fixture enforcement through project adapters, and prove that only one service can grant each shared resource. The project owner approves the live cutover separately.
 
 Keep project profiles, compatibility adapters, and their deployment instructions in the owning project’s local configuration. The public toolkit provides the standalone Coordinator and its MCP setup.
+
+## Releases
+
+Maintainers cut a release with `node scripts/release.mjs <version>`. It refuses a dirty tree, runs the tests, bumps the version in both plugin manifests and the role catalog, adds a [CHANGELOG](CHANGELOG.md) entry from the commits since the last tag, then commits and tags `v<version>`. Push with `git push origin HEAD:main --follow-tags`, then run `update-installs` on each machine. `--dry-run` shows the entry without changing anything.
 
 ## Verify
 

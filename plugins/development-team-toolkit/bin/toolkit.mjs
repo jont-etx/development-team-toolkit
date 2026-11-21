@@ -508,6 +508,16 @@ async function handoffCheck(file, config) {
       else problems.push(`Cross-family review applies to ${scope}: the reviewer must use the other runtime than ${runtime.built} (reviewed: ${runtime.built === 'codex' ? 'claude' : 'codex'}), or mark "cross-family review pending" when it is unavailable.`);
     }
   }
+  // Gates: hot-path work starts from Test Engineer tests; a release needs a Release Reviewer go.
+  const gates = Object.fromEntries(bullets(sections.gates).map((line) => line.split(/:\s*/, 2).map((part) => part.trim())).map(([k, v]) => [k.toLowerCase(), v ?? '']));
+  const hotByPath = owned.filter((path) => hot.some((re) => re.test(path)));
+  const toTestEngineer = /test[- ]engineer/i.test(sections['next owner'] ?? '');
+  if (hotByPath.length && !toTestEngineer && !gates['tests first']) {
+    problems.push(`Hot-path work (${hotByPath.join(', ')}) starts from Test Engineer tests: add "tests first: <evidence>" under Gates.`);
+  }
+  if (/^yes$/i.test(gates.release ?? '') && !/^go(\s|$)/i.test(gates['release reviewer'] ?? '')) {
+    problems.push('This handoff is a release: add "release reviewer: go <evidence>" under Gates from the Release Reviewer.');
+  }
   if (problems.length) process.exitCode = 1;
   return { file, ok: !problems.length, problems, warnings };
 }
@@ -519,6 +529,17 @@ async function main([command, ...args]) {
     return handoffCheck(args[1], (await exists(store.file)) ? validateProject(await readJson(store.file)) : undefined);
   }
   if (command === 'doctor' && !args.length) return doctor();
+  if (command === 'update-installs') {
+    const options = {};
+    for (let i = 0; i < args.length; i += 2) {
+      const key = { '--ref': 'ref', '--marketplace': 'marketplace', '--plugin': 'plugin' }[args[i]];
+      if (!key || args[i + 1] === undefined) throw new Error('Usage: update-installs [--ref <sha>] [--marketplace <name>] [--plugin <name>]');
+      options[key] = args[i + 1];
+    }
+    const result = (await import('./update-installs.mjs')).updateInstalls(options);
+    if (!result.ok) process.exitCode = 1;
+    return result;
+  }
   if (command === 'setup' && args[0] === 'scan' && args.length === 1) return (await import('./setup-scan.mjs')).setupScan(project, catalog);
   if (command === 'worker') {
     const [action, name, ...rest] = args;
@@ -588,7 +609,7 @@ async function main([command, ...args]) {
   const [input, wikiFlag, wikiPath, ...extra] = args;
   if (command === 'roles' && input === undefined) return catalog;
   if (!['init', 'save', 'status', 'config', 'sync-codex', 'sync-claude', 'install-codex-hooks'].includes(command)) {
-    throw new Error('Usage: toolkit.mjs roles | status | config | init <seed.json> [--wiki <path>] | save <settings.json> | sync-codex | sync-claude | install-codex-hooks | doctor | setup scan | worker <start|status|finish> | models <check|retarget|eval> | handoff check <file> | coordinate <command>');
+    throw new Error('Usage: toolkit.mjs roles | status | config | init <seed.json> [--wiki <path>] | save <settings.json> | sync-codex | sync-claude | install-codex-hooks | doctor | setup scan | update-installs | worker <start|status|finish> | models <check|retarget|eval> | handoff check <file> | coordinate <command>');
   }
   if (['init', 'save'].includes(command) ? !input : input !== undefined) throw new Error('Invalid project settings arguments.');
   if (wikiFlag !== undefined && (command !== 'init' || wikiFlag !== '--wiki' || !wikiPath || extra.length)) {

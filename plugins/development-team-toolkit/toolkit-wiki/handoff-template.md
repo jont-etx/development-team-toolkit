@@ -34,6 +34,14 @@ Sections marked required must be filled; the check names any that are missing.
 
 <!-- if the other runtime is unavailable, add: "cross-family review pending: <runtime> unavailable" -->
 
+## Gates
+
+<!-- tests first: required on the project's hot paths (Test Engineer RED test evidence), unless this handoff goes to the Test Engineer -->
+<!-- release: yes when this handoff hands over a release candidate; then a Release Reviewer "go" is required -->
+- tests first: 
+- release: no
+- release reviewer: 
+
 ## Evidence
 
 <!-- optional: links or paths to what supports the decision -->

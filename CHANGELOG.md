@@ -1,0 +1,43 @@
+# Changelog
+
+Releases are tagged `vX.Y.Z`. `node scripts/release.mjs <version>` adds the next entry from the commits since the
+last tag.
+
+## 0.5.0 - 2026-11-21
+
+- Add guided setup skill, setup scan and doctor
+- Accept CRLF checkouts in the setup skill test
+
+## 0.4.0 - 2026-11-21
+
+- Add parallel workers with file and contract reservations
+
+## 0.3.0 - 2026-11-21
+
+- Add Test Engineer and Release Reviewer, cross-family review and runtime fallback
+
+## 0.2.0 - 2026-11-21
+
+- Enforce role access with a guard hook in Claude Code and Codex
+
+## 0.1.12 - 2026-11-20
+
+- Add handoff check, local MCP credentials, and models eval
+
+## 0.1.11 - 2026-11-20
+
+- Prune retired profiles and old requests, add supervisor withdraw
+
+## 0.1.10 - 2026-11-20
+
+- Run the Coordinator tool without approval prompts in Codex
+- Fetch full history in CI for the legacy-migration test
+
+## 0.1.9 - 2026-11-20
+
+- Ship the Coordinator MCP server from the plugin
+
+## 0.1.8 - 2026-11-20
+
+- Add Claude Code support alongside Codex
+- Map roles to model tiers and add model review

@@ -220,7 +220,7 @@ test('handoff check requires cross-family review on hot paths and accepts a mark
   const base = git(root, 'rev-parse', '--short', 'HEAD');
   await writeFile(join(root, 'seed.json'), JSON.stringify({ ...projectConfig, review: { hotPaths: ['src/billing/**'] } }));
   run(root, ['init', 'seed.json']);
-  const handoff = (owned, runtime) => `# Handoff\n\n## Decision\nD-1\n\n## Base revision\n${base}\n\n## Owned files\n- ${owned}\n\n## Acceptance checks\n- npm test\n\n## Next owner\nqa-code\n\n## Runtime\n${runtime}\n`;
+  const handoff = (owned, runtime, gates = '- tests first: tests/a.test.js RED run 1') => `# Handoff\n\n## Decision\nD-1\n\n## Base revision\n${base}\n\n## Owned files\n- ${owned}\n\n## Acceptance checks\n- npm test\n\n## Next owner\nqa-code\n\n## Runtime\n${runtime}\n\n## Gates\n${gates}\n`;
   const check = async (owned, runtime) => {
     await writeFile(join(root, 'h.md'), handoff(owned, runtime));
     return JSON.parse(spawnSync(process.execPath, [cli, 'handoff', 'check', 'h.md'], { cwd: root, encoding: 'utf8' }).stdout);
@@ -232,6 +232,15 @@ test('handoff check requires cross-family review on hot paths and accepts a mark
   const pending = await check('src/billing/a.js', '- built: codex\n- reviewed: codex\n\ncross-family review pending: claude unavailable');
   assert.equal(pending.ok, true);
   assert.match(pending.warnings[0], /pending/);
+  // Gates: hot-path work needs Test Engineer tests first; a release needs a Release Reviewer go.
+  const gated = async (gates) => {
+    await writeFile(join(root, 'h.md'), handoff('src/billing/a.js', '- built: codex\n- reviewed: claude', gates));
+    return JSON.parse(spawnSync(process.execPath, [cli, 'handoff', 'check', 'h.md'], { cwd: root, encoding: 'utf8' }).stdout);
+  };
+  assert.match((await gated('- tests first:\n- release: no')).problems[0], /Test Engineer tests/);
+  assert.match((await gated('- tests first: t RED\n- release: yes\n- release reviewer:')).problems[0], /release reviewer: go/);
+  assert.match((await gated('- tests first: t RED\n- release: yes\n- release reviewer: no-go missing rollback')).problems[0], /release reviewer: go/);
+  assert.equal((await gated('- tests first: t RED\n- release: yes\n- release reviewer: go review-12')).ok, true);
   await writeFile(join(root, 'bad.json'), JSON.stringify({ ...projectConfig, review: { crossFamily: 'sometimes' } }));
   run(root, ['save', 'bad.json'], /crossFamily/);
   await writeFile(join(root, 'off.json'), JSON.stringify({ ...projectConfig, review: { crossFamily: 'off', hotPaths: ['src/billing/**'] } }));
