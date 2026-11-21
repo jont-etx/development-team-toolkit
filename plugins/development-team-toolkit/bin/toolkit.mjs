@@ -153,6 +153,16 @@ function reviewPolicy(config) {
   return { crossFamily: review.crossFamily ?? 'hot-paths', hotPaths: review.hotPaths ?? [] };
 }
 
+// Parallel workers: how many may hold reservations and worktrees at once (the PM is not counted).
+function parallelPolicy(config) {
+  const parallel = config?.parallel ?? {};
+  if (typeof parallel !== 'object' || Array.isArray(parallel) || Object.keys(parallel).some((key) => key !== 'maxWorkers')
+      || (parallel.maxWorkers !== undefined && !(Number.isInteger(parallel.maxWorkers) && parallel.maxWorkers >= 1 && parallel.maxWorkers <= 16))) {
+    throw new Error('Project parallel settings accept maxWorkers (1 to 16).');
+  }
+  return { maxWorkers: parallel.maxWorkers ?? 2 };
+}
+
 // Claude Code limits a subagent's tools in its profile; full-shell writers keep every tool and the guard scopes their writes.
 function claudeTools(role) {
   if (role.access === 'scoped-writer' && role.shell === 'full') return undefined;
@@ -424,6 +434,28 @@ async function main([command, ...args]) {
     const store = await settingsStore();
     return handoffCheck(args[1], (await exists(store.file)) ? validateProject(await readJson(store.file)) : undefined);
   }
+  if (command === 'worker') {
+    const [action, name, ...rest] = args;
+    const workers = await import('./workers.mjs');
+    if (action === 'status' && name === undefined) return workers.workerStatus(project);
+    if (action === 'finish' && name && !rest.length) return workers.workerFinish(project, name);
+    if (action === 'start' && name) {
+      const files = [];
+      const options = { resources: [] };
+      while (rest.length) {
+        const item = rest.shift();
+        if (item === '--resource' || item === '--base') {
+          if (!rest.length) throw new Error(`${item} needs a value.`);
+          if (item === '--resource') options.resources.push(rest.shift());
+          else options.base = rest.shift();
+        } else files.push(item);
+      }
+      const store = await settingsStore();
+      const config = (await exists(store.file)) ? validateProject(await readJson(store.file)) : undefined;
+      return workers.workerStart(project, name, files, { ...options, maxWorkers: parallelPolicy(config).maxWorkers });
+    }
+    throw new Error('Usage: worker start <name> <file-or-dir>... [--resource resource:<name>]... [--base <ref>] | worker status | worker finish <name>');
+  }
   if (command === 'coordinate') {
     if (args[0] === 'mcp') {
       throw new Error('The Coordinator MCP server ships with the plugin in Codex and Claude Code; no setup is needed.');
@@ -470,7 +502,7 @@ async function main([command, ...args]) {
   const [input, wikiFlag, wikiPath, ...extra] = args;
   if (command === 'roles' && input === undefined) return catalog;
   if (!['init', 'save', 'status', 'config', 'sync-codex', 'sync-claude', 'install-codex-hooks'].includes(command)) {
-    throw new Error('Usage: toolkit.mjs roles | status | config | init <seed.json> [--wiki <path>] | save <settings.json> | sync-codex | sync-claude | install-codex-hooks | models <check|retarget|eval> | handoff check <file> | coordinate <command>');
+    throw new Error('Usage: toolkit.mjs roles | status | config | init <seed.json> [--wiki <path>] | save <settings.json> | sync-codex | sync-claude | install-codex-hooks | worker <start|status|finish> | models <check|retarget|eval> | handoff check <file> | coordinate <command>');
   }
   if (['init', 'save'].includes(command) ? !input : input !== undefined) throw new Error('Invalid project settings arguments.');
   if (wikiFlag !== undefined && (command !== 'init' || wikiFlag !== '--wiki' || !wikiPath || extra.length)) {
@@ -499,6 +531,7 @@ async function main([command, ...args]) {
   modelTiers(updated);
   effectiveRoles(updated);
   reviewPolicy(updated);
+  parallelPolicy(updated);
   await writeJson(store.file, updated, false);
   return { store: store.kind, file: store.file, initialized: true };
 }
