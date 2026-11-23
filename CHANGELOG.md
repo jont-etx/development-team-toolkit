@@ -3,6 +3,12 @@
 Releases are tagged `vX.Y.Z`. `node scripts/release.mjs <version>` adds the next entry from the commits since the
 last tag.
 
+## 0.7.0 - 2026-11-23
+
+- Document the planned generator, verifier and coach improvement loop
+- Add removal challengers to the planned improvement loop
+- Add eval harvest, seed, run, outcome and report (improvement loop phase 1)
+
 ## 0.6.0 - 2026-11-21
 
 - Add release script, update-installs and handoff gates
