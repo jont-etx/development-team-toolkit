@@ -3,6 +3,10 @@
 Releases are tagged `vX.Y.Z`. `node scripts/release.mjs <version>` adds the next entry from the commits since the
 last tag.
 
+## 0.7.1 - 2026-11-23
+
+- Let eval commands keep tasks in another repository with --evals-dir
+
 ## 0.7.0 - 2026-11-23
 
 - Document the planned generator, verifier and coach improvement loop
