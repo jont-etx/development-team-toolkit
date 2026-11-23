@@ -3,6 +3,10 @@
 Releases are tagged `vX.Y.Z`. `node scripts/release.mjs <version>` adds the next entry from the commits since the
 last tag.
 
+## 0.12.0 - 2026-11-23
+
+- Add judged roles: saved outputs, a blind judge and owner calibration
+
 ## 0.11.0 - 2026-11-23
 
 - Add the post-promotion watch window and write one file per outcome
