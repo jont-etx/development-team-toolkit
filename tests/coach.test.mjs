@@ -102,3 +102,25 @@ test('compare promotes only a strict win, or a tie at clearly lower cost', async
   assert.equal(cmp('thin').verdict, 'insufficient-runs');
   assert.match(toolkit(root, 'eval', 'compare', '--role', 'qa-code', '--champion', 'champ', '--challenger', 'champ', '--evals-dir', dir).stderr, /Usage: eval compare/);
 });
+
+test('the watch window keeps or reverts a promotion from live handoff outcomes', async (t) => {
+  const { root, dir } = await project(t, TASKS, []);
+  await mkdir(join(dir, 'outcomes'), { recursive: true });
+  const outcome = (version, at, result, defects = 0) => ({ at, role: 'qa-code', version, result, defects, handoff: 'h.md' });
+  const old = Array.from({ length: 4 }, (_, i) => outcome('v1', `2026-11-0${i + 1}T10:00:00Z`, 'accepted'));
+  const bad = Array.from({ length: 3 }, (_, i) => outcome('v2', `2026-12-0${i + 1}T10:00:00Z`, 'rework', 1));
+  await writeFile(join(dir, 'outcomes', '20261101T000000Z-aaaaaa.jsonl'), `${old.map((row) => JSON.stringify(row)).join('\n')}\n`);
+  await writeFile(join(dir, 'outcomes', '20261201T000000Z-bbbbbb.jsonl'), `${bad.map((row) => JSON.stringify(row)).join('\n')}\n`);
+  const watch = (today, ...extra) => ok(root, 'eval', 'watch', '--role', 'qa-code', '--promoted', 'v2', '--previous', 'v1', '--since', '2026-11-30', '--today', today, '--evals-dir', dir, ...extra);
+  const open = watch('2026-12-04');
+  assert.deepEqual([open.verdict, open.after.handoffs, open.after.acceptRate, open.before.acceptRate], ['watching', 3, 0, 1]);
+  assert.equal(watch('2026-12-04', '--hot').verdict, 'revert'); // hot-path roles revert at once
+  const closed = watch('2026-12-15');
+  assert.equal(closed.verdict, 'revert');
+  assert.match(closed.reason, /acceptance 1 -> 0/);
+  const quiet = ok(root, 'eval', 'watch', '--role', 'qa-code', '--promoted', 'v3', '--previous', 'v1', '--since', '2026-11-30', '--today', '2026-12-20', '--evals-dir', dir);
+  assert.deepEqual([quiet.verdict, quiet.reason], ['keep', 'window closed; too few handoffs to judge a drop']);
+  // eval outcome now writes one file per outcome, so parallel sessions never edit the same file.
+  const recorded = ok(root, 'eval', 'outcome', join(root, 'h.md'), '--role', 'qa-code', '--result', 'accepted', '--version', 'v2', '--evals-dir', dir);
+  assert.match(recorded.file, /outcomes\/\d{8}T\d{6}Z-[0-9a-f]{6}\.jsonl$/);
+});

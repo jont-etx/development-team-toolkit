@@ -558,8 +558,11 @@ async function main([command, ...args]) {
     const single = { '--accepted': 'accepted', '--role': 'role', '--kind': 'kind', '--split': 'split', '--id': 'id',
       '--patch': 'patchFile', '--file': 'file', '--task': 'task', '--result': 'result', '--defects': 'defects', '--version': 'version',
       '--champion': 'champion', '--challenger': 'challenger', '--min-runs': 'minRuns', '--champion-cost': 'championCost',
-      '--challenger-cost': 'challengerCost', '--review-day': 'reviewDay', '--today': 'today' };
-    const numeric = ['defects', 'minRuns', 'championCost', 'challengerCost'];
+      '--challenger-cost': 'challengerCost', '--review-day': 'reviewDay', '--today': 'today',
+      '--promoted': 'promoted', '--previous': 'previous', '--since': 'since', '--handoffs': 'handoffs', '--days': 'days' };
+    const numeric = ['defects', 'minRuns', 'championCost', 'challengerCost', 'handoffs', 'days'];
+    const hotAt = rest.indexOf('--hot');
+    if (hotAt >= 0) { rest.splice(hotAt, 1); options.hot = true; }
     while (rest.length) {
       const item = rest.shift();
       if (lists[item] || single[item]) {
@@ -583,6 +586,7 @@ async function main([command, ...args]) {
     if (action === 'misses' && !positional.length) return evals.misses(dir, options);
     if (action === 'readiness' && !positional.length) return evals.readiness(dir, options);
     if (action === 'compare' && !positional.length) return evals.compare(dir, options);
+    if (action === 'watch' && !positional.length) return evals.watch(dir, options);
     if (action === 'check-report' && !positional.length) {
       const protectedChecks = config?.evals?.protectedChecks ?? [];
       if (!Array.isArray(protectedChecks) || protectedChecks.some((item) => typeof item !== 'string' || !item)) {
@@ -595,7 +599,8 @@ async function main([command, ...args]) {
       + 'eval outcome <handoff.md> --role <id> --result accepted|rework|rejected [--defects <n>] [--version <label>] | eval report [--role <id>] | '
       + 'eval checks [--role <id>] [--task <id>] | eval check-report | eval misses --role <id> --version <label> | '
       + 'eval readiness --role <id> --version <label> [--review-day monday] [--today YYYY-MM-DD] | '
-      + 'eval compare --role <id> --champion <version> --challenger <version> [--min-runs 2] [--champion-cost <n> --challenger-cost <n>]');
+      + 'eval compare --role <id> --champion <version> --challenger <version> [--min-runs 2] [--champion-cost <n> --challenger-cost <n>] | '
+      + 'eval watch --role <id> --promoted <version> --previous <version> --since <YYYY-MM-DD> [--hot] [--handoffs 10] [--days 14]');
   }
   if (command === 'worker') {
     const [action, name, ...rest] = args;

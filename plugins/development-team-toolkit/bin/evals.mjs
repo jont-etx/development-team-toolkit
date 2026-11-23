@@ -6,7 +6,7 @@
 // `eval outcome` records how real handoffs went; `eval report` summarizes both. Self-assessment never counts.
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { appendFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, isAbsolute, join, relative } from 'node:path';
@@ -243,6 +243,41 @@ export async function misses(dir, { role, version } = {}) {
     note: 'Holdout tasks are counted, never shown. Write challengers from the training misses only.' };
 }
 
+/**
+ * Watch window after a promotion (improvement-loop decision 8). Live handoff outcomes for the promoted version since
+ * the promotion are compared with the previous version's. A clear drop is an acceptance rate at least 20 points lower
+ * or at least 0.5 more defects per handoff, over at least 3 handoffs on each side.
+ *   watching  the window (default 10 handoffs or 14 days) is still open and there is no clear drop
+ *   revert    a clear drop: at once for a hot-path role, otherwise when the window closes
+ *   keep      the window closed without a clear drop (or without enough handoffs to judge one)
+ */
+export async function watch(dir, { role, promoted, previous, since, today = new Date(), handoffs = 10, days = 14, hot = false } = {}) {
+  if (!SLUG.test(role ?? '') || !promoted || !previous || !since) {
+    throw new Error('Usage: eval watch --role <id> --promoted <version> --previous <version> --since <YYYY-MM-DD> [--hot] [--today YYYY-MM-DD]');
+  }
+  const start = new Date(since);
+  const now = today instanceof Date ? today : new Date(`${today}T12:00:00Z`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(now.getTime())) throw new Error('--since and --today must be dates such as 2026-11-30.');
+  const rows = (await readRows(dir, 'outcomes')).filter((row) => row.role === role);
+  const stat = (list) => ({ handoffs: list.length,
+    acceptRate: round(list.length ? list.filter((row) => row.result === 'accepted').length / list.length : null),
+    defectsPerHandoff: round(list.length ? list.reduce((sum, row) => sum + (row.defects ?? 0), 0) / list.length : null) });
+  const after = stat(rows.filter((row) => row.version === promoted && new Date(row.at) >= start));
+  const before = stat(rows.filter((row) => row.version === previous));
+  const elapsed = Math.floor((now - start) / 86400000);
+  const closed = after.handoffs >= handoffs || elapsed >= days;
+  const comparable = after.handoffs >= 3 && before.handoffs >= 3;
+  const drops = [];
+  if (comparable && before.acceptRate - after.acceptRate >= 0.2) drops.push(`acceptance ${before.acceptRate} -> ${after.acceptRate}`);
+  if (comparable && after.defectsPerHandoff - before.defectsPerHandoff >= 0.5) drops.push(`defects per handoff ${before.defectsPerHandoff} -> ${after.defectsPerHandoff}`);
+  let verdict = 'watching';
+  let reason = `window open: ${after.handoffs}/${handoffs} handoffs, ${elapsed}/${days} days`;
+  if (drops.length && (hot || closed)) { verdict = 'revert'; reason = `clear drop${hot && !closed ? ' on a hot-path role' : ''}: ${drops.join('; ')}`; }
+  else if (closed) { verdict = 'keep'; reason = comparable ? 'window closed without a clear drop' : 'window closed; too few handoffs to judge a drop'; }
+  return { role, promoted, previous, since, verdict, reason, after, before, windowClosed: closed, drops,
+    note: 'A revert verdict means opening a pull request that restores the previous charter; the owner merges it.' };
+}
+
 const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 
 /**
@@ -353,9 +388,8 @@ export async function outcome(project, dir, handoffFile, { role, result, defects
   }
   const row = { at: new Date().toISOString(), role, version: version ?? null, result, defects,
     handoff: relative(project, handoffFile).split('\\').join('/') };
-  await mkdir(dir, { recursive: true });
-  await appendFile(join(dir, 'outcomes.jsonl'), `${JSON.stringify(row)}\n`);
-  return { ...row, next: result === 'accepted' ? 'Consider eval harvest to freeze it as a golden task (owner approves).'
+  const file = await writeRows(dir, 'outcomes', [row]);
+  return { ...row, file: relative(project, file).split('\\').join('/'), next: result === 'accepted' ? 'Consider eval harvest to freeze it as a golden task (owner approves).'
     : 'Record the failure as a regression case once fixed: eval harvest --kind regression.' };
 }
 
@@ -387,7 +421,7 @@ async function jsonl(file) {
 export async function report(dir, { role } = {}) {
   const tasks = await loadTasks(dir, { role });
   const ledger = (await readRows(dir, 'ledger')).filter((row) => !role || row.role === role);
-  const outcomes = (await jsonl(join(dir, 'outcomes.jsonl'))).filter((row) => !role || row.role === role);
+  const outcomes = (await readRows(dir, 'outcomes')).filter((row) => !role || row.role === role);
   const counts = {};
   for (const task of tasks) ((counts[task.role] ??= {})[`${task.kind}/${task.split}`] = (counts[task.role]?.[`${task.kind}/${task.split}`] ?? 0) + 1);
   const live = {};
