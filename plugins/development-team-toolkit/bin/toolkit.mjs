@@ -573,9 +573,18 @@ async function main([command, ...args]) {
     if (action === 'run' && positional.length === 1) return evals.evalRun(project, dir, resolve(positional[0]), options);
     if (action === 'outcome' && positional.length === 1) return evals.outcome(project, dir, resolve(positional[0]), options);
     if (action === 'report' && !positional.length) return evals.report(dir, options);
+    if (action === 'checks' && !positional.length) return evals.evalChecks(project, dir, options);
+    if (action === 'check-report' && !positional.length) {
+      const protectedChecks = config?.evals?.protectedChecks ?? [];
+      if (!Array.isArray(protectedChecks) || protectedChecks.some((item) => typeof item !== 'string' || !item)) {
+        throw new Error('evals.protectedChecks must be a list of command fragments, such as "gates.py".');
+      }
+      return evals.checkReport(dir, { protectedChecks });
+    }
     throw new Error('Usage: eval [--evals-dir <dir>] harvest <handoff.md> --accepted <commit> --role <id> [--kind golden|regression] [--check "<cmd>"]... | '
       + 'eval seed <task-id> --patch <file> --file <path> --keyword <word>... [--role <id>] | eval run <contenders.json> [--role <id>] [--task <id>] [--split train|holdout|all] | '
-      + 'eval outcome <handoff.md> --role <id> --result accepted|rework|rejected [--defects <n>] [--version <label>] | eval report [--role <id>]');
+      + 'eval outcome <handoff.md> --role <id> --result accepted|rework|rejected [--defects <n>] [--version <label>] | eval report [--role <id>] | '
+      + 'eval checks [--role <id>] [--task <id>] | eval check-report');
   }
   if (command === 'worker') {
     const [action, name, ...rest] = args;

@@ -256,3 +256,112 @@ export async function report(dir, { role } = {}) {
   return { tasks: counts, scores: summarize(ledger), outcomes: live,
     note: 'Scores come only from checks, planted bugs and real outcomes, never from an agent grading itself.' };
 }
+
+// ---- Phase 2: checking the checks -------------------------------------------------------------------------------
+// A check earns its place by failing when work is missing or broken and passing when it is right:
+//   golden / regression task  base (work or fix missing) -> should FAIL; accepted -> should PASS
+//   seeded task               accepted with the planted bug -> the source task's checks should FAIL
+// A failure on accepted work is a false alarm. Reviewer catch rates come from seeded rows in the ledger.
+
+async function checkAt(project, commit, checks, { patch, timeoutMs }) {
+  const scratch = await mkdtemp(join(tmpdir(), 'toolkit-checks-'));
+  const worktree = join(scratch, 'work');
+  git(project, 'worktree', 'add', '--detach', worktree, commit);
+  try {
+    if (patch) {
+      await writeFile(join(scratch, 'seed.patch'), patch);
+      git(worktree, 'apply', join(scratch, 'seed.patch'));
+    }
+    const results = [];
+    for (const check of checks) {
+      const outcome = await run(check, worktree, '', timeoutMs);
+      results.push({ check: check.join(' '), failed: outcome.code !== 0, seconds: outcome.seconds ?? null });
+    }
+    return results;
+  } finally {
+    git(project, 'worktree', 'remove', '--force', worktree);
+    await rm(scratch, { recursive: true, force: true });
+  }
+}
+
+/** Run every task's checks on the states that tell whether they discriminate, and append to checks.jsonl. */
+export async function evalChecks(project, dir, { role, task: only, split = 'all' } = {}) {
+  const all = await loadTasks(dir, { split: 'all' });
+  const byId = new Map(all.map((task) => [task.id, task]));
+  const selected = all.filter((task) => (!role || task.role === role) && (!only || task.id === only)
+    && (split === 'all' || task.split === split));
+  const rows = [];
+  for (const task of selected) {
+    const timeoutMs = (task.timeoutSeconds ?? 1800) * 1000;
+    const at = new Date().toISOString();
+    if (task.kind === 'seeded') {
+      const source = byId.get(task.source?.from);
+      if (!source?.checks?.length) continue;
+      for (const result of await checkAt(project, task.base, source.checks, { patch: task.seeded.patch, timeoutMs })) {
+        rows.push({ at, task: task.id, kind: 'seeded', state: 'planted-bug', expect: 'fail', ...result, caught: result.failed });
+      }
+      continue;
+    }
+    if (!task.source?.accepted) continue;
+    for (const result of await checkAt(project, task.base, task.checks, { timeoutMs })) {
+      rows.push({ at, task: task.id, kind: task.kind, state: 'base', expect: 'fail', ...result, caught: result.failed });
+    }
+    for (const result of await checkAt(project, task.source.accepted, task.checks, { timeoutMs })) {
+      rows.push({ at, task: task.id, kind: task.kind, state: 'accepted', expect: 'pass', ...result, falseAlarm: result.failed });
+    }
+  }
+  if (!rows.length) throw new Error('No tasks with runnable checks match.');
+  await mkdir(dir, { recursive: true });
+  await appendFile(join(dir, 'checks.jsonl'), rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
+  return { tasks: selected.length, rows: rows.length, report: summarizeChecks(rows, []) };
+}
+
+export function summarizeChecks(rows, protectedPatterns) {
+  const checks = {};
+  for (const row of rows) {
+    const entry = (checks[row.check] ??= { catchable: 0, caught: 0, cleanRuns: 0, falseAlarms: 0, seconds: 0, runs: 0, missed: [] });
+    entry.runs += 1;
+    entry.seconds += row.seconds ?? 0;
+    if (row.expect === 'fail') {
+      entry.catchable += 1;
+      if (row.caught) entry.caught += 1;
+      else entry.missed.push(`${row.task}:${row.state}`);
+    } else {
+      entry.cleanRuns += 1;
+      if (row.falseAlarm) entry.falseAlarms += 1;
+    }
+  }
+  for (const [check, entry] of Object.entries(checks)) {
+    entry.catchRate = entry.catchable ? Math.round((entry.caught / entry.catchable) * 100) / 100 : null;
+    entry.falseAlarmRate = entry.cleanRuns ? Math.round((entry.falseAlarms / entry.cleanRuns) * 100) / 100 : null;
+    entry.avgSeconds = entry.runs ? Math.round(entry.seconds / entry.runs) : null;
+    entry.protected = protectedPatterns.some((pattern) => check.includes(pattern));
+    if (entry.falseAlarmRate > 0) entry.suggestion = 'fix false alarms: it fails on accepted work';
+    else if (entry.catchable < 5) entry.suggestion = 'too few samples to judge';
+    else if (entry.catchRate < 0.2) entry.suggestion = entry.protected ? 'weak but protected: keep' : 'weak: consider retiring (owner decides)';
+    else entry.suggestion = 'earning its place';
+  }
+  return checks;
+}
+
+/** Whole picture: per-check value, reviewer catch rates on planted bugs, and failure states no check caught. */
+export async function checkReport(dir, { protectedChecks = [] } = {}) {
+  const rows = await jsonl(join(dir, 'checks.jsonl'));
+  const ledger = await jsonl(join(dir, 'ledger.jsonl'));
+  const reviewers = {};
+  for (const row of ledger.filter((item) => item.kind === 'seeded')) {
+    const key = row.version ? `${row.contender}@${row.version}` : row.contender;
+    const entry = ((reviewers[row.role] ??= {})[key] ??= { planted: 0, caught: 0 });
+    entry.planted += 1;
+    entry.caught += row.passed ? 1 : 0;
+  }
+  for (const contenders of Object.values(reviewers)) {
+    for (const entry of Object.values(contenders)) entry.catchRate = Math.round((entry.caught / entry.planted) * 100) / 100;
+  }
+  // A failure state no check caught is a gap: a check, or a reviewer duty, is missing there.
+  const byState = {};
+  for (const row of rows.filter((item) => item.expect === 'fail')) (byState[`${row.task}:${row.state}`] ??= []).push(row.caught);
+  const gaps = Object.entries(byState).filter(([, caught]) => !caught.some(Boolean)).map(([state]) => state);
+  return { checks: summarizeChecks(rows, protectedChecks), reviewers, gaps,
+    note: 'Protected checks (hot-zone and security) are never proposed for retirement. Every suggestion is an owner decision.' };
+}
