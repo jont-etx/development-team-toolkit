@@ -56,7 +56,7 @@ export function validateTask(task) {
   return task;
 }
 
-export async function loadTasks(dir, { role, kind, split } = {}) {
+export async function loadTasks(dir, { role, kind, split, task: only } = {}) {
   const root = join(dir, 'tasks');
   if (!existsSync(root)) return [];
   const tasks = [];
@@ -64,7 +64,7 @@ export async function loadTasks(dir, { role, kind, split } = {}) {
     if (role && roleDir !== role) continue;
     for (const name of (await readdir(join(root, roleDir))).filter((file) => file.endsWith('.json')).sort()) {
       const task = validateTask(JSON.parse(await readFile(join(root, roleDir, name), 'utf8')));
-      if ((!kind || task.kind === kind) && (!split || split === 'all' || task.split === split)) tasks.push(task);
+      if ((!kind || task.kind === kind) && (!split || split === 'all' || only || task.split === split) && (!only || task.id === only)) tasks.push(task);
     }
   }
   return tasks;
@@ -160,7 +160,7 @@ export function scoreChanges(task, changed) {
 }
 
 /** Replay tasks for each contender and append deterministic scores to the ledger. */
-export async function evalRun(project, dir, specFile, { role, split = 'train', kind } = {}) {
+export async function evalRun(project, dir, specFile, { role, split = 'train', kind, task: only } = {}) {
   const spec = JSON.parse(await readFile(specFile, 'utf8'));
   const runs = spec.runs ?? 2;
   const contenders = Object.entries(spec.contenders ?? {});
@@ -168,7 +168,7 @@ export async function evalRun(project, dir, specFile, { role, split = 'train', k
   if (!contenders.length || contenders.some(([name, c]) => !SLUG.test(name) || !Array.isArray(c?.command) || !c.command.length)) {
     throw new Error('Name contenders with slug names, each with a command list (and an optional version label).');
   }
-  const tasks = await loadTasks(dir, { role, split, kind });
+  const tasks = await loadTasks(dir, { role, split, kind, task: only });
   if (!tasks.length) throw new Error('No eval tasks match. Harvest some first.');
   const rows = [];
   for (const task of tasks) {

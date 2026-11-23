@@ -76,7 +76,7 @@ if (input.includes('Review the uncommitted change')) {
   assert.deepEqual(developer.summary.developer['good@v2'].train, { passed: 1, runs: 1 });
   assert.deepEqual(developer.summary.developer['lazy@v1'].train, { passed: 0, runs: 1 });
   assert.deepEqual(developer.summary.developer.overreach.train, { passed: 0, runs: 1 }); // checks pass, scope fails
-  const reviewer = ok(project, 'eval', 'run', spec, '--role', 'qa-code');
+  const reviewer = ok(project, 'eval', 'run', spec, '--role', 'qa-code', '--task', seeded.task);
   assert.deepEqual(reviewer.summary['qa-code']['good@v2'].seeded, { passed: 1, runs: 1 });
   assert.deepEqual(reviewer.summary['qa-code']['lazy@v1'].seeded, { passed: 0, runs: 1 });
   const ledger = (await readFile(join(project, '.development-team', 'evals', 'ledger.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
@@ -94,7 +94,7 @@ if (input.includes('Review the uncommitted change')) {
 
   // --evals-dir keeps tasks in another repository; the replayed code stays in this one.
   const external = join(root, 'wiki-evals');
-  ok(project, 'eval', 'harvest', handoff, '--accepted', accepted, '--role', 'developer', '--id', 'elsewhere', '--evals-dir', external);
+  ok(project, 'eval', '--evals-dir', external, 'harvest', handoff, '--accepted', accepted, '--role', 'developer', '--id', 'elsewhere');
   assert.deepEqual(ok(project, 'eval', 'report', '--evals-dir', external).tasks, { developer: { [`golden/${JSON.parse(await readFile(join(external, 'tasks', 'developer', 'elsewhere.json'), 'utf8')).split}`]: 1 } });
   await writeFile(join(root, 'nochecks.md'), `## Base revision\n${base}\n\n## Owned files\n- src/price.mjs\n\n## Acceptance checks\n- prices look right\n`);
   assert.match(toolkit(project, 'eval', 'harvest', join(root, 'nochecks.md'), '--accepted', accepted, '--role', 'developer').stderr, /No runnable checks/);
