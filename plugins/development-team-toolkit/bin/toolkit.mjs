@@ -546,7 +546,9 @@ async function main([command, ...args]) {
     const evals = await import('./evals.mjs');
     const store = await settingsStore();
     const config = (await exists(store.file)) ? validateProject(await readJson(store.file)) : undefined;
-    const dir = evals.evalsDir(project, config);
+    // --evals-dir keeps tasks in another repository (for example a project wiki) while the code they replay lives here.
+    const at = rest.indexOf('--evals-dir');
+    const dir = at >= 0 ? resolve(rest.splice(at, 2)[1] ?? '') : evals.evalsDir(project, config);
     const positional = [];
     const options = {};
     const lists = { '--check': 'checks', '--keyword': 'keywords' };
@@ -568,7 +570,7 @@ async function main([command, ...args]) {
     if (action === 'run' && positional.length === 1) return evals.evalRun(project, dir, resolve(positional[0]), options);
     if (action === 'outcome' && positional.length === 1) return evals.outcome(project, dir, resolve(positional[0]), options);
     if (action === 'report' && !positional.length) return evals.report(dir, options);
-    throw new Error('Usage: eval harvest <handoff.md> --accepted <commit> --role <id> [--kind golden|regression] [--check "<cmd>"]... | '
+    throw new Error('Usage: eval [--evals-dir <dir>] harvest <handoff.md> --accepted <commit> --role <id> [--kind golden|regression] [--check "<cmd>"]... | '
       + 'eval seed <task-id> --patch <file> --file <path> --keyword <word>... [--role <id>] | eval run <contenders.json> [--role <id>] [--split train|holdout|all] | '
       + 'eval outcome <handoff.md> --role <id> --result accepted|rework|rejected [--defects <n>] [--version <label>] | eval report [--role <id>]');
   }

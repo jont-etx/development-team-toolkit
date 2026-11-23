@@ -147,7 +147,7 @@ Cross-family review and hot paths live under `review` in the project settings, f
 
 ## Measure specialists (improvement loop, phase 1)
 
-Scores come only from checks, planted bugs and real outcomes, never from an agent grading its own work. Tasks live in `.development-team/evals/` (set `evals.dir` in the project settings to keep them elsewhere, such as the project wiki); commit them so scheduled runs can use them.
+Scores come only from checks, planted bugs and real outcomes, never from an agent grading its own work. Tasks live in `.development-team/evals/` (set `evals.dir` in the project settings to keep them elsewhere, such as the project wiki); commit them so scheduled runs can use them. `--evals-dir <dir>` on any `eval` command keeps tasks in another repository, such as a separate wiki checkout, while the code they replay stays in this one.
 
 | Command | Result |
 | --- | --- |

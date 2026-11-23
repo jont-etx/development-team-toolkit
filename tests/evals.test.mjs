@@ -92,6 +92,10 @@ if (input.includes('Review the uncommitted change')) {
   assert.deepEqual(summary.outcomes.developer.v2, { handoffs: 2, accepted: 1, rework: 1, rejected: 0, defects: 2 });
   assert.deepEqual(summary.scores['qa-code']['good@v2'].seeded, { passed: 1, runs: 1 });
 
+  // --evals-dir keeps tasks in another repository; the replayed code stays in this one.
+  const external = join(root, 'wiki-evals');
+  ok(project, 'eval', 'harvest', handoff, '--accepted', accepted, '--role', 'developer', '--id', 'elsewhere', '--evals-dir', external);
+  assert.deepEqual(ok(project, 'eval', 'report', '--evals-dir', external).tasks, { developer: { [`golden/${JSON.parse(await readFile(join(external, 'tasks', 'developer', 'elsewhere.json'), 'utf8')).split}`]: 1 } });
   await writeFile(join(root, 'nochecks.md'), `## Base revision\n${base}\n\n## Owned files\n- src/price.mjs\n\n## Acceptance checks\n- prices look right\n`);
   assert.match(toolkit(project, 'eval', 'harvest', join(root, 'nochecks.md'), '--accepted', accepted, '--role', 'developer').stderr, /No runnable checks/);
   assert.match(toolkit(project, 'eval', 'outcome', handoff, '--role', 'developer', '--result', 'great').stderr, /Usage: eval outcome/);
