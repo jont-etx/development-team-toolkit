@@ -556,14 +556,20 @@ async function main([command, ...args]) {
     const options = {};
     const lists = { '--check': 'checks', '--keyword': 'keywords' };
     const single = { '--accepted': 'accepted', '--role': 'role', '--kind': 'kind', '--split': 'split', '--id': 'id',
-      '--patch': 'patchFile', '--file': 'file', '--task': 'task', '--result': 'result', '--defects': 'defects', '--version': 'version' };
+      '--patch': 'patchFile', '--file': 'file', '--task': 'task', '--result': 'result', '--defects': 'defects', '--version': 'version',
+      '--champion': 'champion', '--challenger': 'challenger', '--min-runs': 'minRuns', '--champion-cost': 'championCost',
+      '--challenger-cost': 'challengerCost', '--review-day': 'reviewDay', '--today': 'today' };
+    const numeric = ['defects', 'minRuns', 'championCost', 'challengerCost'];
     while (rest.length) {
       const item = rest.shift();
       if (lists[item] || single[item]) {
         if (!rest.length) throw new Error(`${item} needs a value.`);
         const value = rest.shift();
         if (lists[item]) (options[lists[item]] ??= []).push(value);
-        else options[single[item]] = single[item] === 'defects' ? Number(value) : value;
+        else if (numeric.includes(single[item])) {
+          if (!Number.isFinite(Number(value))) throw new Error(`${item} needs a number.`);
+          options[single[item]] = Number(value);
+        } else options[single[item]] = value;
       } else positional.push(item);
     }
     if (action === 'harvest' && positional.length === 1) return evals.harvest(project, dir, resolve(positional[0]), options);
@@ -574,6 +580,9 @@ async function main([command, ...args]) {
     if (action === 'outcome' && positional.length === 1) return evals.outcome(project, dir, resolve(positional[0]), options);
     if (action === 'report' && !positional.length) return evals.report(dir, options);
     if (action === 'checks' && !positional.length) return evals.evalChecks(project, dir, options);
+    if (action === 'misses' && !positional.length) return evals.misses(dir, options);
+    if (action === 'readiness' && !positional.length) return evals.readiness(dir, options);
+    if (action === 'compare' && !positional.length) return evals.compare(dir, options);
     if (action === 'check-report' && !positional.length) {
       const protectedChecks = config?.evals?.protectedChecks ?? [];
       if (!Array.isArray(protectedChecks) || protectedChecks.some((item) => typeof item !== 'string' || !item)) {
@@ -584,7 +593,9 @@ async function main([command, ...args]) {
     throw new Error('Usage: eval [--evals-dir <dir>] harvest <handoff.md> --accepted <commit> --role <id> [--kind golden|regression] [--check "<cmd>"]... | '
       + 'eval seed <task-id> --patch <file> --file <path> --keyword <word>... [--role <id>] | eval run <contenders.json> [--role <id>] [--task <id>] [--split train|holdout|all] | '
       + 'eval outcome <handoff.md> --role <id> --result accepted|rework|rejected [--defects <n>] [--version <label>] | eval report [--role <id>] | '
-      + 'eval checks [--role <id>] [--task <id>] | eval check-report');
+      + 'eval checks [--role <id>] [--task <id>] | eval check-report | eval misses --role <id> --version <label> | '
+      + 'eval readiness --role <id> --version <label> [--review-day monday] [--today YYYY-MM-DD] | '
+      + 'eval compare --role <id> --champion <version> --challenger <version> [--min-runs 2] [--champion-cost <n> --challenger-cost <n>]');
   }
   if (command === 'worker') {
     const [action, name, ...rest] = args;

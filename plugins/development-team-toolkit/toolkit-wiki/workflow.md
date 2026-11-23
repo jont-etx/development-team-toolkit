@@ -38,7 +38,7 @@ File reservations stop two workers editing the same files. They cannot see seman
 
 ## Improvement loop
 
-Phase 1 (measurement: `eval harvest`, `eval seed`, `eval run`, `eval outcome`, `eval report`) and phase 2 (checking the checks: `eval checks`, `eval check-report`) are available; see the README. The coach and the nightly schedule are planned.
+Phase 1 (measurement: `eval harvest`, `eval seed`, `eval run`, `eval outcome`, `eval report`) and phase 2 (checking the checks: `eval checks`, `eval check-report`) are available, and so are the coach's tools: `eval misses` (training misses only), `eval readiness` (propose now, at the weekly review, or keep collecting) and `eval compare` (the strict-win test). The coach itself is a scheduled agent each project writes around these; see the README.
 
 Specialists improve without grading their own work. A **generator** is a specialist at a given role version, a **verifier** is a read-only scorer, and a **coach** proposes changed role versions (challengers) and compares them with the current one (champion). Planned design:
 

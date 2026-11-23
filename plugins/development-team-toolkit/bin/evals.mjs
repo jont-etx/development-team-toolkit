@@ -17,6 +17,7 @@ const SHA = /^[0-9a-f]{7,40}$/i;
 const KINDS = ['golden', 'regression', 'seeded'];
 const SPLITS = ['train', 'holdout'];
 const RESULTS = ['accepted', 'rework', 'rejected'];
+const SEVERITIES = { high: 3, medium: 2, low: 1 };
 const REVIEW_PROMPT = 'Review the uncommitted change in this working tree (run `git diff`) for defects against its intent. '
   + 'Report each defect with its file path and line, and what is wrong.';
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -45,6 +46,7 @@ export function validateTask(task) {
   if (!SPLITS.includes(task.split)) fail(`split must be ${SPLITS.join(' or ')}.`);
   if (!SHA.test(task.base ?? '')) fail('needs a base commit.');
   if (typeof task.prompt !== 'string' || !task.prompt.trim()) fail('needs a prompt.');
+  if (task.severity !== undefined && !SEVERITIES[task.severity]) fail(`severity must be ${Object.keys(SEVERITIES).join(', ')}.`);
   if (task.kind === 'seeded') {
     const seeded = task.seeded;
     if (!seeded || typeof seeded.patch !== 'string' || !seeded.patch.trim() || typeof seeded.file !== 'string'
@@ -186,6 +188,8 @@ export async function evalRun(project, dir, specFile, { role, split = 'train', k
           const agent = await run(command, worktree, task.prompt, timeoutMs, { captureOutput: true });
           const row = { at: new Date().toISOString(), contender, version: version ?? null, role: task.role, task: task.id,
             kind: task.kind, split: task.split, run: attempt, agentExit: agent.code, seconds: agent.seconds ?? null };
+          // An agent that never started is not a miss: flag it so reports and comparisons leave the row out.
+          if (agent.code === null) row.agentError = agent.error ?? 'the agent did not start';
           if (task.kind === 'seeded') {
             const found = scoreSeeded(task, agent.output);
             Object.assign(row, found, { passed: found.caught });
@@ -210,10 +214,131 @@ export async function evalRun(project, dir, specFile, { role, split = 'train', k
   return { tasks: tasks.length, runs, rows: rows.length, summary: summarize(rows), ledger: relative(project, file).split('\\').join('/') };
 }
 
+// Older rows have no agentError field; a null exit code means the same thing.
+const failedToRun = (row) => Boolean(row.agentError) || row.agentExit === null;
+const rate = (rows) => (rows.length ? rows.filter((row) => row.passed).length / rows.length : null);
+const mean = (values) => (values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null);
+const round = (value) => (value === null ? null : Math.round(value * 100) / 100);
+
+/**
+ * Coach input: the training tasks a charter version missed. Holdout tasks are only counted, never named,
+ * so a challenger cannot be written to fit them.
+ */
+export async function misses(dir, { role, version } = {}) {
+  if (!SLUG.test(role ?? '') || !version) throw new Error('Usage: eval misses --role <id> --version <label>');
+  const tasks = await loadTasks(dir, { role, split: 'all' });
+  const rows = (await readRows(dir, 'ledger')).filter((row) => row.role === role && row.version === version && !failedToRun(row));
+  const train = [];
+  let holdoutMissed = 0;
+  for (const task of tasks) {
+    const runs = rows.filter((row) => row.task === task.id);
+    const missed = runs.filter((row) => !row.passed).length;
+    if (!missed) continue;
+    if (task.split === 'holdout') { holdoutMissed += 1; continue; }
+    train.push({ task: task.id, kind: task.kind, missed, runs: runs.length, prompt: task.prompt,
+      ...(task.kind === 'seeded' ? { file: task.seeded.file, keywords: task.seeded.keywords } : { failedChecks: [...new Set(runs.map((row) => row.failedCheck).filter(Boolean))] }) });
+  }
+  const unrun = tasks.filter((task) => !rows.some((row) => row.task === task.id)).length;
+  return { role, version, train, holdoutMissed, unrun,
+    note: 'Holdout tasks are counted, never shown. Write challengers from the training misses only.' };
+}
+
+const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+
+/**
+ * When the coach should propose for a role, so it reacts fast to serious misses and waits for more data on minor ones.
+ * Misses are weighted by task severity (high 3, medium 2, low 1; default medium).
+ *   wait    not enough runs yet, only holdout misses (nothing the coach may learn from), or minor misses seen too few times
+ *   urgent  a high-severity task missed on at least half its runs, or a weighted miss rate at or above `urgentRate`
+ *   review  on the weekly review day: real misses to fix, or no misses at all (then removal challengers, decision 14)
+ */
+export async function readiness(dir, { role, version, minRuns = 2, reviewDay = 'monday', today = new Date(),
+  urgentRate = 0.25, minorRate = 0.1, minorRuns = 4 } = {}) {
+  if (!SLUG.test(role ?? '') || !version) throw new Error('Usage: eval readiness --role <id> --version <label> [--review-day monday] [--today YYYY-MM-DD]');
+  const day = String(reviewDay).toLowerCase();
+  if (!DAYS.includes(day)) throw new Error(`--review-day must be one of ${DAYS.join(', ')}.`);
+  const date = today instanceof Date ? today : new Date(`${today}T12:00:00Z`);
+  if (Number.isNaN(date.getTime())) throw new Error('--today must be a date such as 2026-11-30.');
+  const isReviewDay = DAYS[date.getUTCDay()] === day;
+  const tasks = await loadTasks(dir, { role, split: 'all' });
+  if (!tasks.length) throw new Error(`No eval tasks for ${role}.`);
+  const rows = (await readRows(dir, 'ledger')).filter((row) => row.role === role && row.version === version && !failedToRun(row));
+  const stats = tasks.map((task) => {
+    const runs = rows.filter((row) => row.task === task.id);
+    return { task, runs: runs.length, missRate: runs.length ? 1 - rate(runs) : 0, weight: SEVERITIES[task.severity ?? 'medium'] };
+  });
+  const short = stats.filter((item) => item.runs < minRuns).map((item) => item.task.id);
+  const weighted = round(stats.reduce((sum, item) => sum + item.weight * item.missRate, 0) / stats.reduce((sum, item) => sum + item.weight, 0));
+  const trainMisses = stats.filter((item) => item.task.split === 'train' && item.missRate > 0);
+  const holdoutMisses = stats.filter((item) => item.task.split === 'holdout' && item.missRate > 0).length;
+  const severe = stats.filter((item) => item.weight === SEVERITIES.high && item.missRate >= 0.5).map((item) => item.task.id);
+  const base = { role, version, weightedMissRate: weighted, trainMisses: trainMisses.length, holdoutMisses, reviewDay: day, isReviewDay };
+  const result = (urgency, mode, reasons) => ({ ...base, urgency, ready: urgency !== 'wait', mode, reasons,
+    next: urgency === 'wait' ? 'keep collecting' : 'propose now' });
+  if (short.length) return result('wait', null, [`collecting: fewer than ${minRuns} runs on ${short.join(', ')}`]);
+  if (!trainMisses.length) {
+    if (holdoutMisses) return result('wait', null, ['only holdout tasks missed; add training tasks like them before coaching']);
+    return isReviewDay ? result('review', 'removal', ['no misses: try one removal challenger (ties go to the smaller charter)'])
+      : result('wait', null, [`no misses; removal challengers wait for ${day}`]);
+  }
+  if (severe.length) return result('urgent', 'fix', [`high-severity task missed on half its runs or more: ${severe.join(', ')}`]);
+  if (weighted >= urgentRate) return result('urgent', 'fix', [`weighted miss rate ${weighted} is at or above ${urgentRate}`]);
+  if (weighted < minorRate && trainMisses.some((item) => item.runs < minorRuns)) {
+    return result('wait', null, [`minor misses (weighted ${weighted}); collect ${minorRuns} runs on each missed task first`]);
+  }
+  return isReviewDay ? result('review', 'fix', [`weekly review: ${trainMisses.length} training task(s) missed`])
+    : result('wait', null, [`misses are not urgent; propose on ${day}`]);
+}
+
+/**
+ * Strict-win test (improvement-loop decision 7, ADR promotion): the challenger must have enough runs, lose no
+ * task the champion always passes and no regression task, and score higher on both the training and the
+ * holdout set, or tie on both at clearly lower cost (decision 14: ties go to the smaller charter).
+ */
+export async function compare(dir, { role, champion, challenger, minRuns = 2, championCost, challengerCost } = {}) {
+  if (!SLUG.test(role ?? '') || !champion || !challenger || champion === challenger) {
+    throw new Error('Usage: eval compare --role <id> --champion <version> --challenger <version> [--min-runs <n>] [--champion-cost <n> --challenger-cost <n>]');
+  }
+  const tasks = await loadTasks(dir, { role, split: 'all' });
+  if (!tasks.length) throw new Error(`No eval tasks for ${role}.`);
+  const rows = (await readRows(dir, 'ledger')).filter((row) => row.role === role && !failedToRun(row));
+  const perTask = [];
+  const insufficient = [];
+  for (const task of tasks) {
+    const a = rows.filter((row) => row.task === task.id && row.version === champion);
+    const b = rows.filter((row) => row.task === task.id && row.version === challenger);
+    if (a.length < minRuns || b.length < minRuns) insufficient.push(`${task.id} (${a.length}/${b.length} runs)`);
+    perTask.push({ task: task.id, split: task.split, kind: task.kind, champion: round(rate(a)), challenger: round(rate(b)),
+      championSeconds: mean(a.map((row) => row.seconds ?? 0)), challengerSeconds: mean(b.map((row) => row.seconds ?? 0)) });
+  }
+  const score = (split, side) => round(mean(perTask.filter((item) => item.split === split && item[side] !== null).map((item) => item[side])));
+  const sets = {};
+  for (const split of SPLITS) sets[split] = { champion: score(split, 'champion'), challenger: score(split, 'challenger') };
+  const regressions = perTask.filter((item) => item.champion !== null && item.challenger !== null && item.challenger < item.champion
+    && (item.kind === 'regression' || item.champion === 1)).map((item) => item.task);
+  const cost = (side, given) => (given !== undefined ? Number(given) : mean(perTask.map((item) => item[`${side}Seconds`]).filter((value) => value !== null)));
+  const costs = { champion: cost('champion', championCost), challenger: cost('challenger', challengerCost),
+    measure: championCost !== undefined ? 'given' : 'seconds' };
+  const used = SPLITS.filter((split) => sets[split].champion !== null);
+  const better = used.every((split) => sets[split].challenger > sets[split].champion);
+  const tied = used.every((split) => sets[split].challenger === sets[split].champion);
+  const cheaper = costs.challenger !== null && costs.champion !== null && costs.challenger <= costs.champion * 0.9;
+  let verdict = 'keep';
+  const reasons = [];
+  if (insufficient.length) { verdict = 'insufficient-runs'; reasons.push(`need ${minRuns} runs per task for both: ${insufficient.join(', ')}`); }
+  else if (regressions.length) reasons.push(`loses tasks the champion passes: ${regressions.join(', ')}`);
+  else if (better) { verdict = 'promote'; reasons.push(`higher on ${used.join(' and ')}`); }
+  else if (tied && cheaper) { verdict = 'promote'; reasons.push(`ties on ${used.join(' and ')} at clearly lower cost (${costs.measure})`); }
+  else reasons.push(tied ? 'ties without clearly lower cost' : `not higher on every set (${used.map((split) => `${split} ${sets[split].champion}->${sets[split].challenger}`).join(', ')})`);
+  return { role, champion, challenger, verdict, reasons, sets, regressions, costs, tasks: perTask,
+    note: 'A promote verdict only qualifies the challenger for an owner pull request; merging it is the promotion.' };
+}
+
 function summarize(rows) {
   const out = {};
   for (const row of rows) {
     const entry = (((out[row.role] ??= {})[row.version ? `${row.contender}@${row.version}` : row.contender] ??= {}));
+    if (failedToRun(row)) { entry.errors = (entry.errors ?? 0) + 1; continue; }
     const bucket = (entry[row.kind === 'seeded' ? 'seeded' : row.split] ??= { passed: 0, runs: 0 });
     bucket.runs += 1;
     bucket.passed += row.passed ? 1 : 0;
@@ -367,7 +492,7 @@ export async function checkReport(dir, { protectedChecks = [] } = {}) {
   const rows = await readRows(dir, 'checks');
   const ledger = await readRows(dir, 'ledger');
   const reviewers = {};
-  for (const row of ledger.filter((item) => item.kind === 'seeded')) {
+  for (const row of ledger.filter((item) => item.kind === 'seeded' && !failedToRun(item))) {
     const key = row.version ? `${row.contender}@${row.version}` : row.contender;
     const entry = ((reviewers[row.role] ??= {})[key] ??= { planted: 0, caught: 0 });
     entry.planted += 1;
