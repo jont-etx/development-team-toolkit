@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "revision": "0.9.0",
+  "revision": "0.10.0",
   "specialistRules": "Follow the current project's instructions, task scope, and permission gates. This role grants no additional authority. Do not launch agents, push, deploy, access shared resources, or grant approval without the applicable authorization. A hook enforces this role's write scope and shell access; hand off anything outside it instead of working around it. If you take over work from the other runtime, first make the stopped work safe (preserve partial work, roll back to the last verified commit, release its Coordinator requests) and mark any degraded review in the handoff. Preserve unrelated work. Report evidence, the exact candidate, unresolved gates and the next owner. Stop affected work when asked.",
   "roles": [
     {

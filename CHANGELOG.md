@@ -3,6 +3,10 @@
 Releases are tagged `vX.Y.Z`. `node scripts/release.mjs <version>` adds the next entry from the commits since the
 last tag.
 
+## 0.10.0 - 2026-11-23
+
+- Add coach tools: training misses, a readiness gate and the strict-win comparison
+
 ## 0.9.0 - 2026-11-23
 
 - Write each eval run to its own ledger or checks file
