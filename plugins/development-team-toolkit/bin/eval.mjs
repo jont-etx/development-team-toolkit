@@ -34,7 +34,7 @@ function validate(spec) {
 }
 
 // Windows starts .cmd shims such as codex or npm only through the shell, so bare names there go through it with plain arguments.
-function run(argv, cwd, input, timeoutMs) {
+export function run(argv, cwd, input, timeoutMs, { captureOutput = false } = {}) {
   const shell = process.platform === 'win32' && !isAbsolute(argv[0]) && !/[\\/]|\.exe$/i.test(argv[0]);
   if (shell && argv.some((arg) => !safeArg.test(arg))) {
     return Promise.resolve({ code: null, error: `On Windows, use an absolute executable path for commands with special characters: ${argv[0]}` });
@@ -42,14 +42,16 @@ function run(argv, cwd, input, timeoutMs) {
   return new Promise((resolve) => {
     const started = Date.now();
     const [file, args] = shell ? [argv.join(' '), []] : [argv[0], argv.slice(1)];
-    const child = spawn(file, args, { cwd, shell, windowsHide: true, stdio: ['pipe', 'ignore', 'pipe'] });
+    const child = spawn(file, args, { cwd, shell, windowsHide: true, stdio: ['pipe', captureOutput ? 'pipe' : 'ignore', 'pipe'] });
     let stderr = '';
+    let stdout = '';
+    if (captureOutput) child.stdout.on('data', (chunk) => { stdout = (stdout + chunk).slice(-65536); });
     const timer = setTimeout(() => child.kill(), timeoutMs);
     child.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(-2000); });
     child.once('error', (error) => { clearTimeout(timer); resolve({ code: null, error: error.message }); });
     child.once('close', (code) => {
       clearTimeout(timer);
-      resolve({ code, seconds: Math.round((Date.now() - started) / 1000), ...(code ? { error: stderr.trim().split('\n').at(-1) ?? '' } : {}) });
+      resolve({ code, seconds: Math.round((Date.now() - started) / 1000), ...(captureOutput ? { output: stdout } : {}), ...(code ?{ error: stderr.trim().split('\n').at(-1) ?? '' } : {}) });
     });
     child.stdin.on('error', () => {});
     child.stdin.end(input);

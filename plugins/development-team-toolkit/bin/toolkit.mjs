@@ -541,6 +541,37 @@ async function main([command, ...args]) {
     return result;
   }
   if (command === 'setup' && args[0] === 'scan' && args.length === 1) return (await import('./setup-scan.mjs')).setupScan(project, catalog);
+  if (command === 'eval') {
+    const [action, ...rest] = args;
+    const evals = await import('./evals.mjs');
+    const store = await settingsStore();
+    const config = (await exists(store.file)) ? validateProject(await readJson(store.file)) : undefined;
+    const dir = evals.evalsDir(project, config);
+    const positional = [];
+    const options = {};
+    const lists = { '--check': 'checks', '--keyword': 'keywords' };
+    const single = { '--accepted': 'accepted', '--role': 'role', '--kind': 'kind', '--split': 'split', '--id': 'id',
+      '--patch': 'patchFile', '--file': 'file', '--result': 'result', '--defects': 'defects', '--version': 'version' };
+    while (rest.length) {
+      const item = rest.shift();
+      if (lists[item] || single[item]) {
+        if (!rest.length) throw new Error(`${item} needs a value.`);
+        const value = rest.shift();
+        if (lists[item]) (options[lists[item]] ??= []).push(value);
+        else options[single[item]] = single[item] === 'defects' ? Number(value) : value;
+      } else positional.push(item);
+    }
+    if (action === 'harvest' && positional.length === 1) return evals.harvest(project, dir, resolve(positional[0]), options);
+    if (action === 'seed' && positional.length === 1) {
+      return evals.seed(project, dir, positional[0], { ...options, patchFile: options.patchFile && resolve(options.patchFile) });
+    }
+    if (action === 'run' && positional.length === 1) return evals.evalRun(project, dir, resolve(positional[0]), options);
+    if (action === 'outcome' && positional.length === 1) return evals.outcome(project, dir, resolve(positional[0]), options);
+    if (action === 'report' && !positional.length) return evals.report(dir, options);
+    throw new Error('Usage: eval harvest <handoff.md> --accepted <commit> --role <id> [--kind golden|regression] [--check "<cmd>"]... | '
+      + 'eval seed <task-id> --patch <file> --file <path> --keyword <word>... [--role <id>] | eval run <contenders.json> [--role <id>] [--split train|holdout|all] | '
+      + 'eval outcome <handoff.md> --role <id> --result accepted|rework|rejected [--defects <n>] [--version <label>] | eval report [--role <id>]');
+  }
   if (command === 'worker') {
     const [action, name, ...rest] = args;
     const workers = await import('./workers.mjs');
@@ -609,7 +640,7 @@ async function main([command, ...args]) {
   const [input, wikiFlag, wikiPath, ...extra] = args;
   if (command === 'roles' && input === undefined) return catalog;
   if (!['init', 'save', 'status', 'config', 'sync-codex', 'sync-claude', 'install-codex-hooks'].includes(command)) {
-    throw new Error('Usage: toolkit.mjs roles | status | config | init <seed.json> [--wiki <path>] | save <settings.json> | sync-codex | sync-claude | install-codex-hooks | doctor | setup scan | update-installs | worker <start|status|finish> | models <check|retarget|eval> | handoff check <file> | coordinate <command>');
+    throw new Error('Usage: toolkit.mjs roles | status | config | init <seed.json> [--wiki <path>] | save <settings.json> | sync-codex | sync-claude | install-codex-hooks | doctor | setup scan | update-installs | eval <harvest|seed|run|outcome|report> | worker <start|status|finish> | models <check|retarget|eval> | handoff check <file> | coordinate <command>');
   }
   if (['init', 'save'].includes(command) ? !input : input !== undefined) throw new Error('Invalid project settings arguments.');
   if (wikiFlag !== undefined && (command !== 'init' || wikiFlag !== '--wiki' || !wikiPath || extra.length)) {
@@ -639,6 +670,7 @@ async function main([command, ...args]) {
   effectiveRoles(updated);
   reviewPolicy(updated);
   parallelPolicy(updated);
+  (await import('./evals.mjs')).evalsDir(project, updated);
   await writeJson(store.file, updated, false);
   return { store: store.kind, file: store.file, initialized: true };
 }

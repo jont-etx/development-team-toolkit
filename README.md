@@ -145,6 +145,20 @@ Limits: Codex ignores `sandbox_mode` in custom agent files (subagents inherit th
 
 Cross-family review and hot paths live under `review` in the project settings, for example `{"review": {"hotPaths": ["src/billing/**", "migrations/**"]}}`. `crossFamily` is `hot-paths` (default), `always` or `off`. `handoff check` then requires the handoff's Runtime section to name a reviewer from the other runtime than the builder, or a `cross-family review pending` marker when that runtime is unavailable. The [workflow](plugins/development-team-toolkit/toolkit-wiki/workflow.md#review-independence) covers review independence, Test Engineer and Release Reviewer, and how work continues when one runtime is unavailable.
 
+## Measure specialists (improvement loop, phase 1)
+
+Scores come only from checks, planted bugs and real outcomes, never from an agent grading its own work. Tasks live in `.development-team/evals/` (set `evals.dir` in the project settings to keep them elsewhere, such as the project wiki); commit them so scheduled runs can use them.
+
+| Command | Result |
+| --- | --- |
+| `node $toolkit eval harvest <handoff.md> --accepted <commit> --role <id> [--kind golden\|regression] [--check "<cmd>"]...` | Freezes an accepted handoff as a golden task (or a fixed failure as a regression case): base commit, handoff, owned and changed files, and must-pass checks. Acceptance checks written as `` `command` `` bullets become checks. About one task in five goes to the holdout set. |
+| `node $toolkit eval seed <task-id> --patch <file> --file <path> --keyword <word>...` | Plants a known bug (a patch that must apply to the accepted commit) as a review task, by default for `qa-code`. A reviewer passes only if its findings name the file and one of the keywords. |
+| `node $toolkit eval run <contenders.json> [--role <id>] [--split train\|holdout\|all]` | Replays tasks for each contender in throwaway worktrees. Golden and regression tasks pass when every check passes and changes stay inside the owned files; seeded tasks pass when the planted bug is found. Results append to `ledger.jsonl`. |
+| `node $toolkit eval outcome <handoff.md> --role <id> --result accepted\|rework\|rejected [--defects <n>] [--version <label>]` | Records how a real handoff went, in `outcomes.jsonl`. |
+| `node $toolkit eval report [--role <id>]` | Task counts per role, kind and split; pass rates per contender and version; live outcomes per version. |
+
+A contenders file names each version and the command that runs it, with the task prompt on standard input: `{"runs": 2, "contenders": {"champion": {"command": ["claude", "-p", "--agent", "toolkit-qa-code"], "version": "v1"}, "challenger": {"command": ["..."], "version": "v2"}}}`.
+
 ## Coordinate parallel work
 
 For several specialists on one task, use the [parallel workers](plugins/development-team-toolkit/toolkit-wiki/workflow.md#parallel-workers) procedure: `worker start` gives each worker its own worktree and Coordinator reservation, `worker finish` checks and merges it, and `parallel.maxWorkers` in the project settings caps how many run at once (default 2).
