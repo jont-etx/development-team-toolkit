@@ -559,8 +559,9 @@ async function main([command, ...args]) {
       '--patch': 'patchFile', '--file': 'file', '--task': 'task', '--result': 'result', '--defects': 'defects', '--version': 'version',
       '--champion': 'champion', '--challenger': 'challenger', '--min-runs': 'minRuns', '--champion-cost': 'championCost',
       '--challenger-cost': 'challengerCost', '--review-day': 'reviewDay', '--today': 'today',
-      '--promoted': 'promoted', '--previous': 'previous', '--since': 'since', '--handoffs': 'handoffs', '--days': 'days' };
-    const numeric = ['defects', 'minRuns', 'championCost', 'challengerCost', 'handoffs', 'days'];
+      '--promoted': 'promoted', '--previous': 'previous', '--since': 'since', '--handoffs': 'handoffs', '--days': 'days',
+      '--count': 'count' };
+    const numeric = ['defects', 'minRuns', 'championCost', 'challengerCost', 'handoffs', 'days', 'count'];
     const hotAt = rest.indexOf('--hot');
     if (hotAt >= 0) { rest.splice(hotAt, 1); options.hot = true; }
     while (rest.length) {
@@ -587,6 +588,14 @@ async function main([command, ...args]) {
     if (action === 'readiness' && !positional.length) return evals.readiness(dir, options);
     if (action === 'compare' && !positional.length) return evals.compare(dir, options);
     if (action === 'watch' && !positional.length) return evals.watch(dir, options);
+    if (action === 'calibration' && !positional.length) return evals.calibration(dir, options);
+    if (['generate', 'judge', 'labels'].includes(action)) {
+      const judged = await import('./judged.mjs');
+      if (action === 'generate' && positional.length === 1) return judged.generate(project, dir, resolve(positional[0]), options);
+      if (action === 'judge' && positional.length === 1) return judged.judge(dir, resolve(positional[0]), options);
+      if (action === 'labels' && positional[0] === 'export' && positional.length === 1) return judged.labelsExport(dir, options);
+      if (action === 'labels' && positional[0] === 'import' && positional.length === 2) return judged.labelsImport(dir, resolve(positional[1]));
+    }
     if (action === 'check-report' && !positional.length) {
       const protectedChecks = config?.evals?.protectedChecks ?? [];
       if (!Array.isArray(protectedChecks) || protectedChecks.some((item) => typeof item !== 'string' || !item)) {
@@ -600,7 +609,9 @@ async function main([command, ...args]) {
       + 'eval checks [--role <id>] [--task <id>] | eval check-report | eval misses --role <id> --version <label> | '
       + 'eval readiness --role <id> --version <label> [--review-day monday] [--today YYYY-MM-DD] | '
       + 'eval compare --role <id> --champion <version> --challenger <version> [--min-runs 2] [--champion-cost <n> --challenger-cost <n>] | '
-      + 'eval watch --role <id> --promoted <version> --previous <version> --since <YYYY-MM-DD> [--hot] [--handoffs 10] [--days 14]');
+      + 'eval watch --role <id> --promoted <version> --previous <version> --since <YYYY-MM-DD> [--hot] [--handoffs 10] [--days 14] | '
+      + 'eval generate <contenders.json> [--role <id>] [--task <id>] | eval judge <judge.json> --role <id> [--champion <version> --challenger <version>] | '
+      + 'eval labels export --role <id> [--count 5] | eval labels import <answers.json> | eval calibration --role <id>');
   }
   if (command === 'worker') {
     const [action, name, ...rest] = args;

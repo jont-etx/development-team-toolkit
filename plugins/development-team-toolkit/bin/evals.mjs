@@ -14,7 +14,7 @@ import { run } from './eval.mjs';
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const SHA = /^[0-9a-f]{7,40}$/i;
-const KINDS = ['golden', 'regression', 'seeded'];
+const KINDS = ['golden', 'regression', 'seeded', 'judged'];
 const SPLITS = ['train', 'holdout'];
 const RESULTS = ['accepted', 'rework', 'rejected'];
 const SEVERITIES = { high: 3, medium: 2, low: 1 };
@@ -47,7 +47,14 @@ export function validateTask(task) {
   if (!SHA.test(task.base ?? '')) fail('needs a base commit.');
   if (typeof task.prompt !== 'string' || !task.prompt.trim()) fail('needs a prompt.');
   if (task.severity !== undefined && !SEVERITIES[task.severity]) fail(`severity must be ${Object.keys(SEVERITIES).join(', ')}.`);
-  if (task.kind === 'seeded') {
+  if (task.kind === 'judged') {
+    // Subjective roles (improvement-loop decisions 16-21): an output is judged blind against the role's rubric,
+    // with the owner-accepted output as context. `rubric` is a path inside the evals folder.
+    if (typeof task.rubric !== 'string' || !task.rubric.trim() || isAbsolute(task.rubric) || task.rubric.split(/[\\/]/).includes('..')) {
+      fail('judged tasks need a rubric path inside the evals folder.');
+    }
+    if (typeof task.reference !== 'string' || !task.reference.trim()) fail('judged tasks need the accepted output as reference text.');
+  } else if (task.kind === 'seeded') {
     const seeded = task.seeded;
     if (!seeded || typeof seeded.patch !== 'string' || !seeded.patch.trim() || typeof seeded.file !== 'string'
         || !Array.isArray(seeded.keywords) || !seeded.keywords.length) fail('seeded tasks need a patch, the file it breaks and keywords a finding must mention.');
@@ -162,7 +169,7 @@ export function scoreChanges(task, changed) {
 }
 
 /** Replay tasks for each contender and append deterministic scores to the ledger. */
-export async function evalRun(project, dir, specFile, { role, split = 'train', kind, task: only } = {}) {
+export async function readContenders(specFile) {
   const spec = JSON.parse(await readFile(specFile, 'utf8'));
   const runs = spec.runs ?? 2;
   const contenders = Object.entries(spec.contenders ?? {});
@@ -170,8 +177,14 @@ export async function evalRun(project, dir, specFile, { role, split = 'train', k
   if (!contenders.length || contenders.some(([name, c]) => !SLUG.test(name) || !Array.isArray(c?.command) || !c.command.length)) {
     throw new Error('Name contenders with slug names, each with a command list (and an optional version label).');
   }
-  const tasks = await loadTasks(dir, { role, split, kind, task: only });
-  if (!tasks.length) throw new Error('No eval tasks match. Harvest some first.');
+  return { runs, contenders };
+}
+
+export async function evalRun(project, dir, specFile, { role, split = 'train', kind, task: only } = {}) {
+  const { runs, contenders } = await readContenders(specFile);
+  // Judged tasks are not scored here: `eval generate` saves their outputs and `eval judge` scores them.
+  const tasks = (await loadTasks(dir, { role, split, kind, task: only })).filter((task) => task.kind !== 'judged');
+  if (!tasks.length) throw new Error('No eval tasks match. Harvest some first (judged tasks use eval generate and eval judge).');
   const rows = [];
   for (const task of tasks) {
     const timeoutMs = (task.timeoutSeconds ?? 1800) * 1000;
@@ -278,6 +291,21 @@ export async function watch(dir, { role, promoted, previous, since, today = new 
     note: 'A revert verdict means opening a pull request that restores the previous charter; the owner merges it.' };
 }
 
+/**
+ * Is the judge trusted for a role? Owner blind labels (decision 4) are compared with the judge's verdict on the same
+ * pairs; judged scores count only while the judge agrees on at least `minAgreement` of the latest `window` labels.
+ */
+export async function calibration(dir, { role, minLabels = 5, minAgreement = 0.8, window = 20 } = {}) {
+  if (!SLUG.test(role ?? '')) throw new Error('Usage: eval calibration --role <id>');
+  const labels = (await readRows(dir, 'labels')).filter((row) => row.role === role).sort((a, b) => String(a.at).localeCompare(String(b.at))).slice(-window);
+  const agree = labels.filter((row) => row.agree).length;
+  const agreement = labels.length ? round(agree / labels.length) : null;
+  const calibrated = labels.length >= minLabels && agreement >= minAgreement;
+  return { role, labels: labels.length, agreement, calibrated,
+    reason: calibrated ? `judge agrees with the owner on ${agree} of ${labels.length} recent labels`
+      : labels.length < minLabels ? `needs ${minLabels} owner labels, has ${labels.length}` : `agreement ${agreement} is below ${minAgreement}` };
+}
+
 const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 
 /**
@@ -297,6 +325,12 @@ export async function readiness(dir, { role, version, minRuns = 2, reviewDay = '
   const isReviewDay = DAYS[date.getUTCDay()] === day;
   const tasks = await loadTasks(dir, { role, split: 'all' });
   if (!tasks.length) throw new Error(`No eval tasks for ${role}.`);
+  if (tasks.some((task) => task.kind === 'judged')) {
+    const judge = await calibration(dir, { role });
+    if (!judge.calibrated) {
+      return { role, version, urgency: 'wait', ready: false, mode: null, next: 'keep collecting', reasons: [`judge not calibrated: ${judge.reason}`] };
+    }
+  }
   const rows = (await readRows(dir, 'ledger')).filter((row) => row.role === role && row.version === version && !failedToRun(row));
   const stats = tasks.map((task) => {
     const runs = rows.filter((row) => row.task === task.id);
@@ -336,6 +370,13 @@ export async function compare(dir, { role, champion, challenger, minRuns = 2, ch
   }
   const tasks = await loadTasks(dir, { role, split: 'all' });
   if (!tasks.length) throw new Error(`No eval tasks for ${role}.`);
+  if (tasks.some((task) => task.kind === 'judged')) {
+    const judge = await calibration(dir, { role });
+    if (!judge.calibrated) {
+      return { role, champion, challenger, verdict: 'judge-not-calibrated', reasons: [judge.reason], calibration: judge,
+        note: 'Judged scores count toward promotion only while the judge agrees with owner labels (decision 4).' };
+    }
+  }
   const rows = (await readRows(dir, 'ledger')).filter((row) => row.role === role && !failedToRun(row));
   const perTask = [];
   const insufficient = [];
@@ -395,7 +436,7 @@ export async function outcome(project, dir, handoffFile, { role, result, defects
 
 // Each run writes its own file under <dir>/<kind>/, so runs on different branches (for example nightly pull
 // requests) never edit the same file and never conflict. A legacy single <kind>.jsonl is still read as history.
-async function writeRows(dir, kind, rows) {
+export async function writeRows(dir, kind, rows) {
   const folder = join(dir, kind);
   await mkdir(folder, { recursive: true });
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
