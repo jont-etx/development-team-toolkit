@@ -36,6 +36,16 @@ The hub may run several specialists at once on one task, up to the project's `pa
 
 File reservations stop two workers editing the same files. They cannot see semantic clashes in different files, such as duplicate IDs, routes or incompatible dependencies, so tests and review still apply.
 
+## Improvement loop (planned)
+
+Specialists improve without grading their own work. A **generator** is a specialist at a given role version, a **verifier** is a read-only scorer, and a **coach** proposes changed role versions (challengers) and compares them with the current one (champion). Planned design:
+
+- **Ground truth from outside the loop.** Golden tasks frozen from owner-accepted work decide pass or fail. Seeded defects show whether reviewers and checks catch planted bugs. Real outcomes (rework, defects found later, owner rejections) break ties over time. Every failure in real work becomes a permanent regression case.
+- **Verifier.** Deterministic checks first; a model judge only for subjective roles, with a rubric, blind comparison and the other model family. The judge counts only while it agrees with the owner's weekly blind labels. The coach can never edit the verifier, the task sets, or any role's write scope, shell or gates.
+- **Promotion.** A challenger replaces the champion only if it passes every hard gate the champion passes, regresses on no regression case, and scores better on both a training and a holdout set over repeated runs. Promotions and reverts are pull requests the owner merges; every version and score is kept, and a promotion that does worse in real work is reverted.
+- **Checking the checks.** A check report shows each check's catch rate on seeded defects, false alarms, cost and escaped bugs it would have caught, so weak checks can be retired and missing ones added.
+- **Cadence and budget.** The coach runs nightly from the repositories for roles with new evidence, capped per night and paused near the usage reserve. Projects supply their own role source, hard checks, hot paths and task sets.
+
 ## Local Coordinator
 
 Choose one reservation authority for each shared resource. Use the toolkit's local Coordinator for a standalone clone. Where an existing project service owns shared resources, use that service until ownership is deliberately transferred. Never grant the same resource through both. Split independent work by repo-relative paths and run it in linked Git worktrees.
