@@ -206,9 +206,8 @@ export async function evalRun(project, dir, specFile, { role, split = 'train', k
       }
     }
   }
-  await mkdir(dir, { recursive: true });
-  await appendFile(join(dir, 'ledger.jsonl'), rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
-  return { tasks: tasks.length, runs, rows: rows.length, summary: summarize(rows), ledger: relative(project, join(dir, 'ledger.jsonl')).split('\\').join('/') };
+  const file = await writeRows(dir, 'ledger', rows);
+  return { tasks: tasks.length, runs, rows: rows.length, summary: summarize(rows), ledger: relative(project, file).split('\\').join('/') };
 }
 
 function summarize(rows) {
@@ -235,6 +234,26 @@ export async function outcome(project, dir, handoffFile, { role, result, defects
     : 'Record the failure as a regression case once fixed: eval harvest --kind regression.' };
 }
 
+// Each run writes its own file under <dir>/<kind>/, so runs on different branches (for example nightly pull
+// requests) never edit the same file and never conflict. A legacy single <kind>.jsonl is still read as history.
+async function writeRows(dir, kind, rows) {
+  const folder = join(dir, kind);
+  await mkdir(folder, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+  const file = join(folder, `${stamp}-${createHash('sha256').update(`${process.pid}-${Math.random()}`).digest('hex').slice(0, 6)}.jsonl`);
+  await writeFile(file, rows.map((row) => JSON.stringify(row)).join('\n') + '\n', { flag: 'wx' });
+  return file;
+}
+
+export async function readRows(dir, kind) {
+  const rows = await jsonl(join(dir, `${kind}.jsonl`));
+  const folder = join(dir, kind);
+  if (existsSync(folder)) {
+    for (const name of (await readdir(folder)).filter((file) => file.endsWith('.jsonl')).sort()) rows.push(...await jsonl(join(folder, name)));
+  }
+  return rows;
+}
+
 async function jsonl(file) {
   if (!existsSync(file)) return [];
   return (await readFile(file, 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line));
@@ -242,7 +261,7 @@ async function jsonl(file) {
 
 export async function report(dir, { role } = {}) {
   const tasks = await loadTasks(dir, { role });
-  const ledger = (await jsonl(join(dir, 'ledger.jsonl'))).filter((row) => !role || row.role === role);
+  const ledger = (await readRows(dir, 'ledger')).filter((row) => !role || row.role === role);
   const outcomes = (await jsonl(join(dir, 'outcomes.jsonl'))).filter((row) => !role || row.role === role);
   const counts = {};
   for (const task of tasks) ((counts[task.role] ??= {})[`${task.kind}/${task.split}`] = (counts[task.role]?.[`${task.kind}/${task.split}`] ?? 0) + 1);
@@ -311,9 +330,8 @@ export async function evalChecks(project, dir, { role, task: only, split = 'all'
     }
   }
   if (!rows.length) throw new Error('No tasks with runnable checks match.');
-  await mkdir(dir, { recursive: true });
-  await appendFile(join(dir, 'checks.jsonl'), rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
-  return { tasks: selected.length, rows: rows.length, report: summarizeChecks(rows, []) };
+  const file = await writeRows(dir, 'checks', rows);
+  return { tasks: selected.length, rows: rows.length, file: relative(project, file).split('\\').join('/'), report: summarizeChecks(rows, []) };
 }
 
 export function summarizeChecks(rows, protectedPatterns) {
@@ -346,8 +364,8 @@ export function summarizeChecks(rows, protectedPatterns) {
 
 /** Whole picture: per-check value, reviewer catch rates on planted bugs, and failure states no check caught. */
 export async function checkReport(dir, { protectedChecks = [] } = {}) {
-  const rows = await jsonl(join(dir, 'checks.jsonl'));
-  const ledger = await jsonl(join(dir, 'ledger.jsonl'));
+  const rows = await readRows(dir, 'checks');
+  const ledger = await readRows(dir, 'ledger');
   const reviewers = {};
   for (const row of ledger.filter((item) => item.kind === 'seeded')) {
     const key = row.version ? `${row.contender}@${row.version}` : row.contender;

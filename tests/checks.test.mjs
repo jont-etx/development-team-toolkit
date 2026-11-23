@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { summarizeChecks } from '../plugins/development-team-toolkit/bin/evals.mjs';
+import { readRows, summarizeChecks } from '../plugins/development-team-toolkit/bin/evals.mjs';
 
 const cli = fileURLToPath(new URL('../plugins/development-team-toolkit/bin/toolkit.mjs', import.meta.url));
 const git = (cwd, ...args) => {
@@ -63,7 +63,8 @@ test('the check report separates useful, useless and noisy checks, and lists fai
   assert.equal(report.checks['node useless.mjs'].protected, true);
   assert.deepEqual(report.reviewers['qa-code']['claude@v1'], { planted: 1, caught: 1, catchRate: 1 });
   assert.deepEqual(report.gaps, []); // the useful check caught every failure state
-  assert.ok((await readFile(join(dir, 'checks.jsonl'), 'utf8')).trim().split('\n').length === 9);
+  assert.equal((await readRows(dir, 'checks')).length, 9);
+  assert.match(measured.file, /evals\/checks\/\d{8}T\d{6}Z-[0-9a-f]{6}\.jsonl$/);
 });
 
 test('suggestions need enough samples, never retire protected checks, and flag weak ones for the owner', () => {

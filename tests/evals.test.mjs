@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { readRows } from '../plugins/development-team-toolkit/bin/evals.mjs';
 
 const cli = fileURLToPath(new URL('../plugins/development-team-toolkit/bin/toolkit.mjs', import.meta.url));
 const git = (cwd, ...args) => {
@@ -79,8 +80,14 @@ if (input.includes('Review the uncommitted change')) {
   const reviewer = ok(project, 'eval', 'run', spec, '--role', 'qa-code', '--task', seeded.task);
   assert.deepEqual(reviewer.summary['qa-code']['good@v2'].seeded, { passed: 1, runs: 1 });
   assert.deepEqual(reviewer.summary['qa-code']['lazy@v1'].seeded, { passed: 0, runs: 1 });
-  const ledger = (await readFile(join(project, '.development-team', 'evals', 'ledger.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  // Each run wrote its own file, so nightly pull requests never edit the same file.
+  const evalsDir = join(project, '.development-team', 'evals');
+  assert.equal((await readdir(join(evalsDir, 'ledger'))).length, 2);
+  const ledger = await readRows(evalsDir, 'ledger');
   assert.equal(ledger.length, 6);
+  // A legacy single ledger.jsonl is still read alongside the per-run files.
+  await writeFile(join(evalsDir, 'ledger.jsonl'), `${JSON.stringify({ kind: 'seeded', role: 'qa-code', contender: 'legacy', passed: true })}\n`);
+  assert.equal((await readRows(evalsDir, 'ledger')).length, 7);
   assert.deepEqual(ledger.find((row) => row.contender === 'overreach').outside, ['src/extra.mjs']);
   assert.ok(!(await readdir(join(project, '.git', 'worktrees')).catch(() => [])).length, 'throwaway worktrees are removed');
 
