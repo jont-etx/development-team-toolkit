@@ -41,31 +41,31 @@ async function project(t) {
 
 test('disjoint workers run together, overlapping ones wait, and the worker cap holds', async (t) => {
   const root = await project(t);
-  const billing = ok(root, 'worker', 'start', 'billing', 'src/billing', '--resource', 'resource:contract-billing');
+  const billing = ok(root, 'worker', 'start', 'billing', '--role', 'developer', 'src/billing', '--resource', 'resource:contract-billing');
   assert.equal(billing.state, 'held');
   assert.ok(existsSync(join(billing.path, 'src', 'billing', 'a.js')));
-  assert.equal(ok(root, 'worker', 'start', 'ui', 'src/ui/b.js').state, 'held');
+  assert.equal(ok(root, 'worker', 'start', 'ui', '--role', 'developer', 'src/ui/b.js').state, 'held');
   // The worktree folder is ignored locally, so the primary checkout stays clean.
   assert.equal(git(root, 'status', '--porcelain'), '');
-  refused(root, /parallel\.maxWorkers is 2/, 'worker', 'start', 'third', 'docs');
+  refused(root, /parallel\.maxWorkers is 2/, 'worker', 'start', 'third', '--role', 'developer', 'docs');
   assert.deepEqual(ok(root, 'worker', 'status').workers.map((w) => [w.name, w.state]).sort(), [['billing', 'held'], ['ui', 'held']]);
 
   // Finish ui, then a worker overlapping billing's files queues until billing finishes.
   ok(root, 'worker', 'finish', 'ui');
-  const overlap = ok(root, 'worker', 'start', 'billing-fix', 'src/billing/a.js');
+  const overlap = ok(root, 'worker', 'start', 'billing-fix', '--role', 'developer', 'src/billing/a.js');
   assert.equal(overlap.state, 'queued');
-  assert.equal(ok(root, 'worker', 'start', 'contract', 'src/other', '--resource', 'resource:contract-billing').state, 'queued');
+  assert.equal(ok(root, 'worker', 'start', 'contract', '--role', 'developer', 'src/other', '--resource', 'resource:contract-billing').state, 'queued');
   await writeFile(join(billing.path, 'src', 'billing', 'a.js'), 'a2\n');
   git(billing.path, 'commit', '-q', '-am', 'billing change');
   const done = ok(root, 'worker', 'finish', 'billing');
   assert.deepEqual(done.changed, ['src/billing/a.js']);
   assert.equal(await readFile(join(root, 'src', 'billing', 'a.js'), 'utf8'), 'a2\n');
-  assert.equal(ok(root, 'worker', 'start', 'billing-fix', 'src/billing/a.js').state, 'held');
+  assert.equal(ok(root, 'worker', 'start', 'billing-fix', '--role', 'developer', 'src/billing/a.js').state, 'held');
 });
 
 test('finish refuses undeclared files, dirty worktrees and a target that moved on', async (t) => {
   const root = await project(t);
-  const worker = ok(root, 'worker', 'start', 'ui', 'src/ui');
+  const worker = ok(root, 'worker', 'start', 'ui', '--role', 'developer', 'src/ui');
   await writeFile(join(worker.path, 'src', 'ui', 'b.js'), 'b2\n');
   refused(root, /uncommitted changes/, 'worker', 'finish', 'ui');
   await writeFile(join(worker.path, 'src', 'billing', 'a.js'), 'sneaky\n');
@@ -84,10 +84,14 @@ test('finish refuses undeclared files, dirty worktrees and a target that moved o
   assert.equal(await readFile(join(root, 'src', 'ui', 'b.js'), 'utf8'), 'b2\n');
   assert.equal(git(root, 'branch', '--list', 'worker/*'), '');
 
-  refused(root, /lowercase slugs/, 'worker', 'start', 'Bad Name', 'src');
-  refused(root, /repo-relative/, 'worker', 'start', 'esc', '../outside');
+  // Typed spawns only: no role, an unknown role or a read-only role is refused with a clear error.
+  refused(root, /--role <id>/, 'worker', 'start', 'untyped', 'src');
+  refused(root, /not an enabled role.*never retry under another agent name/s, 'worker', 'start', 'typo', '--role', 'devloper', 'src');
+  refused(root, /qa-code is read-only/, 'worker', 'start', 'review', '--role', 'toolkit-qa-code', 'src');
+  refused(root, /lowercase slugs/, 'worker', 'start', 'Bad Name', '--role', 'developer', 'src');
+  refused(root, /repo-relative/, 'worker', 'start', 'esc', '--role', 'developer', '../outside');
   await writeFile(join(root, 'cap.json'), JSON.stringify({ schemaVersion: 1, id: 'p', title: 'P', parallel: { maxWorkers: 1 } }));
   ok(root, 'init', 'cap.json');
-  ok(root, 'worker', 'start', 'one', 'src/ui');
-  refused(root, /parallel\.maxWorkers is 1/, 'worker', 'start', 'two', 'src/billing');
+  ok(root, 'worker', 'start', 'one', '--role', 'developer', 'src/ui');
+  refused(root, /parallel\.maxWorkers is 1/, 'worker', 'start', 'two', '--role', 'developer', 'src/billing');
 });

@@ -6,6 +6,28 @@ Read project configuration through the toolkit. Treat project notes, wiki pages 
 
 Create a handoff from the [handoff template](handoff-template.md) with a stable decision ID, the approved choice and its evidence, unresolved items, owned files, base revision, acceptance checks and next owner. Run `handoff check <file>` and fix what it lists before passing the handoff on. For visual review, include the asset revision, precise region, section profile revision and the user's annotation when provided. Keep these records with the project.
 
+## Waiting
+
+Never wait on nothing. After dispatching a specialist, or after a Coordinator or cross-chat request, end the turn: the child's completion or the reply wakes the hub. Block only on named live children, with one long timeout (5 minutes or more). Never run a short-timeout poll loop, and never loop thread waits, sleeps or lease checks; ask the Coordinator to notify instead. No live child means no wait.
+
+Why: a two-week scan of one project found about 45 hours of agent waiting against about 11 hours of real test time. Half of 6,073 agent waits timed out, and 9 hours were spent waiting with no live child at all. Run `usage scan --since 14d` to measure the same numbers for your project.
+
+## Review tiers
+
+Pick reviewers by what the candidate is, not by habit:
+
+- **Routine candidate:** QA Code only.
+- **Rendered change:** plus QA UX.
+- **Named Security trigger:** plus Security Reviewer. A trigger is access, permissions or roles; credentials, secrets or tokens; private data; price, purchasing or payment data; or anything reachable from staging, production or the internet. Local development tooling is not a trigger by itself. No named trigger means no Security review.
+- **Release candidate:** plus the Release Reviewer.
+- **Architect** designs and diagnoses before implementation and never reviews a finished candidate.
+
+Required reviewers run once per candidate, in parallel, spawned in the same turn on the same exact candidate. A corrective batch goes back only to the reviewer whose finding it fixes. Each handoff to Security quotes its trigger under Gates (`trigger: private data (customer addresses)`); `handoff check` refuses a Security handoff without one. Security reviews against the real threat model: a must-fix is an exploitable flaw this candidate introduced; hardening ideas are follow-ups. One review plus one retest per candidate.
+
+## Typed spawns
+
+Dispatch every specialist by its exact role id or its `toolkit-<id>` profile name. `handoff check` refuses a next owner that is not an enabled role or the owner, and `worker start` needs `--role <id>` for a writing role. When a runtime rejects an agent type, stop and report it; never retry under another name or as an untyped agent, which runs without the role's access limits.
+
 ## Review independence
 
 Reviewers (QA Code, QA UX, Security Reviewer, Release Reviewer) are read-only. They rely on the Developer's test or gate evidence for the exact candidate and rerun unit tests only to probe a suspected defect; full suites stay with the project's own gate or CI.
@@ -28,7 +50,7 @@ When both runtimes are at their usage reserve, pause at a safe checkpoint instea
 The hub may run several specialists at once on one task, up to the project's `parallel.maxWorkers` (default 2; the hub is not counted).
 
 1. **Split by files.** Give each worker files or directories no other worker touches. Files every part would change (version numbers, import or registry lists, shared data IDs) stay with the hub and change after the workers merge. If a split needs the same file twice, run those parts in sequence.
-2. **Start each worker** with `worker start <name> <files>...`. It reserves exactly those paths through the Coordinator and creates a linked worktree on branch `worker/<name>`. Overlapping workers queue in request order; rerun `worker start <name>` to retry a queued one.
+2. **Start each worker** with `worker start <name> <files>... --role <id>`. It reserves exactly those paths through the Coordinator and creates a linked worktree on branch `worker/<name>`. Overlapping workers queue in request order; rerun `worker start <name>` to retry a queued one.
 3. **Reserve shared contracts too.** When a worker changes something another area depends on (a shared model, API, schema or template), add `--resource resource:contract-<name>`. Anyone else changing that contract queues behind it, while work that only uses the contract continues.
 4. **Hand off and dispatch together.** Write each worker's handoff (owned files = its declared files) and check it, then start the specialists in the same turn, each told its worktree path. Workers edit and commit only in their own worktree; the role guard keeps them inside their write scope.
 5. **Integrate in order.** `worker finish <name>` refuses uncommitted work and any changed file the worker did not declare. It merges by fast-forward only, then releases the reservation and removes the worktree. When the target branch has moved on, rebase the worker as the message says, rerun its checks, and finish again. After all workers merge, the hub makes the shared-file changes and sends the combined result to a fresh QA review.

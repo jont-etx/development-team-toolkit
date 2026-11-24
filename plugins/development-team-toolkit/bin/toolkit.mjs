@@ -143,6 +143,20 @@ function effectiveRoles(config) {
     .map((role) => ({ ...role, ...overrides[role.id] }));
 }
 
+// Typed spawns: work goes to a named, enabled role (its id or its toolkit-<id> profile name), or back to the owner or hub.
+// An unknown name is an error to report, never a cue to retry under a different agent name.
+const HUMAN_OWNERS = ['owner', 'user', 'pm', 'hub'];
+function resolveRole(value, config) {
+  const name = String(value ?? '').trim().toLowerCase().replace(/^`|`$/g, '').replace(/^toolkit-/, '');
+  if (HUMAN_OWNERS.includes(name)) return { id: name, human: true };
+  return effectiveRoles(config).find((role) => role.id === name) ?? null;
+}
+const unknownRole = (value, config) => `"${value}" is not an enabled role (use one of: ${[...effectiveRoles(config).map((role) => role.id), ...HUMAN_OWNERS].join(', ')}). `
+  + 'Stop and report it; never retry under another agent name.';
+
+// Security reviews run on a named trigger only; the handoff quotes it (workflow: Review tiers).
+const SECURITY_TRIGGERS = 'access or roles, credentials or secrets, private data, price or payment data, or exposure to staging, production or the internet';
+
 // Cross-family review: work on hot paths (or all work) is reviewed by the other runtime's models.
 const RUNTIMES = ['codex', 'claude'];
 function reviewPolicy(config) {
@@ -494,6 +508,9 @@ async function handoffCheck(file, config) {
     if (isAbsolute(path) || path.split(/[\\/]/).includes('..')) problems.push(`Owned file "${path}" must be a repo-relative path.`);
   }
   const warnings = [];
+  const nextOwner = sections['next owner']?.split('\n')[0].trim();
+  const next = nextOwner ? resolveRole(nextOwner, config) : null;
+  if (nextOwner && !next) problems.push(`Next owner ${unknownRole(nextOwner, config)}`);
   const review = reviewPolicy(config);
   const owned = bullets(sections['owned files']).map((item) => item.replaceAll('`', '').replaceAll('\\', '/'));
   const hot = review.hotPaths.map(globRegex);
@@ -514,6 +531,9 @@ async function handoffCheck(file, config) {
   const toTestEngineer = /test[- ]engineer/i.test(sections['next owner'] ?? '');
   if (hotByPath.length && !toTestEngineer && !gates['tests first']) {
     problems.push(`Hot-path work (${hotByPath.join(', ')}) starts from Test Engineer tests: add "tests first: <evidence>" under Gates.`);
+  }
+  if (next?.id === 'security-reviewer' && (!gates.trigger || /^none\b/i.test(gates.trigger))) {
+    problems.push(`Security review runs only on a named trigger: quote it under Gates as "trigger: <${SECURITY_TRIGGERS}>".`);
   }
   if (/^yes$/i.test(gates.release ?? '') && !/^go(\s|$)/i.test(gates['release reviewer'] ?? '')) {
     problems.push('This handoff is a release: add "release reviewer: go <evidence>" under Gates from the Release Reviewer.');
@@ -613,6 +633,18 @@ async function main([command, ...args]) {
       + 'eval generate <contenders.json> [--role <id>] [--task <id>] | eval judge <judge.json> --role <id> [--champion <version> --challenger <version>] | '
       + 'eval labels export --role <id> [--count 5] | eval labels import <answers.json> | eval calibration --role <id>');
   }
+  if (command === 'usage') {
+    const [action, ...rest] = args;
+    const keys = { '--since': 'since', '--tests': 'testPattern', '--codex-home': 'codexHome', '--claude-home': 'claudeHome' };
+    const options = {};
+    while (rest.length) {
+      const key = keys[rest.shift()];
+      if (!key || !rest.length) { options.bad = true; break; }
+      options[key] = rest.shift();
+    }
+    if (action !== 'scan' || options.bad) throw new Error('Usage: usage scan [--since 14d|YYYY-MM-DD] [--tests <regex>] [--codex-home <dir>] [--claude-home <dir>]');
+    return (await import('./usage.mjs')).usageScan(options);
+  }
   if (command === 'worker') {
     const [action, name, ...rest] = args;
     const workers = await import('./workers.mjs');
@@ -623,17 +655,23 @@ async function main([command, ...args]) {
       const options = { resources: [] };
       while (rest.length) {
         const item = rest.shift();
-        if (item === '--resource' || item === '--base') {
+        if (item === '--resource' || item === '--base' || item === '--role') {
           if (!rest.length) throw new Error(`${item} needs a value.`);
           if (item === '--resource') options.resources.push(rest.shift());
+          else if (item === '--role') options.role = rest.shift();
           else options.base = rest.shift();
         } else files.push(item);
       }
       const store = await settingsStore();
       const config = (await exists(store.file)) ? validateProject(await readJson(store.file)) : undefined;
-      return workers.workerStart(project, name, files, { ...options, maxWorkers: parallelPolicy(config).maxWorkers });
+      // Typed spawns only: every worker is started for a named writing role.
+      if (!options.role) throw new Error('Name the worker\'s role with --role <id>, e.g. --role developer. Untyped workers are refused.');
+      const role = resolveRole(options.role, config);
+      if (!role || role.human) throw new Error(`Worker role ${unknownRole(options.role, config)}`);
+      if (role.access !== 'scoped-writer') throw new Error(`${role.id} is read-only; a worker edits files, so start it for a writing role.`);
+      return workers.workerStart(project, name, files, { ...options, role: role.id, maxWorkers: parallelPolicy(config).maxWorkers });
     }
-    throw new Error('Usage: worker start <name> <file-or-dir>... [--resource resource:<name>]... [--base <ref>] | worker status | worker finish <name>');
+    throw new Error('Usage: worker start <name> <file-or-dir>... --role <id> [--resource resource:<name>]... [--base <ref>] | worker status | worker finish <name>');
   }
   if (command === 'coordinate') {
     if (args[0] === 'mcp') {

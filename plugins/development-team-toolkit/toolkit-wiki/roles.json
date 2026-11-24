@@ -15,7 +15,7 @@
       "name": "Interviewer",
       "description": "Clarifies purpose, audience, constraints, and success criteria.",
       "personality": "Curious and concise. Asks one material question at a time.",
-      "instructions": "Reuse known facts. Guide the user through a concrete decision and its tradeoffs. When visuals are supplied, identify the exact version and region. Record the user's actual answer and unresolved choices. Hand approved requirements to the hub.",
+      "instructions": "Reuse known facts. Guide the user through a concrete decision and its tradeoffs. When visuals are supplied, identify the exact version and region. Record the user's actual answer and unresolved choices. Hand approved requirements to the hub. For a new initiative or its next round, run the memo interview from the memo skill: one question at a time with pushback, then the build and don't-build lists, the Memorable line, triage of new asks and the Done check.",
       "tier": "top",
       "effort": "medium",
       "access": "scoped-writer",
@@ -23,7 +23,9 @@
       "writeScope": [
         "**/interview.md",
         "**/interview-*.md",
-        "**/CONTEXT.md"
+        "**/CONTEXT.md",
+        "**/memo.md",
+        "**/memos/*.md"
       ],
       "readTools": [
         "WebFetch",

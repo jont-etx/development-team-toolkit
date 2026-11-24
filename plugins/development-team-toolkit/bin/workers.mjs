@@ -37,7 +37,7 @@ function validate(name, files, resources) {
   for (const resource of resources) if (!resource.startsWith('resource:')) throw new Error(`Named resources start with resource:, e.g. resource:contract-billing (${resource}).`);
 }
 
-export function workerStart(project, name, files, { resources = [], base = 'HEAD', maxWorkers = 2 } = {}) {
+export function workerStart(project, name, files, { resources = [], base = 'HEAD', maxWorkers = 2, role = null } = {}) {
   files = files.map((file) => file.replaceAll('\\', '/'));
   validate(name, files, resources);
   const dirs = paths(project);
@@ -52,7 +52,7 @@ export function workerStart(project, name, files, { resources = [], base = 'HEAD
     const request = coordinate(project, ['request', name, ...files.map((f) => `file:${f}`), ...resources]);
     writeFileSync(join(dirs.credentials, request.id), `${request.capability}\n`, { flag: 'wx', mode: 0o600 });
     const into = git(dirs.primary, 'branch', '--show-current');
-    meta = { name, files, resources, id: request.id, into, state: 'queued' };
+    meta = { name, role, files, resources, id: request.id, into, state: 'queued' };
     writeFileSync(file, `${JSON.stringify(meta, null, 2)}\n`); // record before claiming so a retry finds the request
   }
   const claimed = coordinate(project, ['claim', meta.id], credential(dirs, meta.id));

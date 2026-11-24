@@ -83,14 +83,15 @@ Wiki setup records the wiki path in `.development-team/wiki.json`. If the select
 | `node $toolkit sync-claude` | Creates or refreshes toolkit subagents under `.claude/agents/`, removes unedited subagents for retired roles, and stops on conflicting edits |
 | `node $toolkit models check [--record]` | Compares the Codex model catalog with the models used by tiers and project agent profiles, and flags unavailable or newly offered models |
 | `node $toolkit models retarget <codex\|claude> <from> <to>` | Moves hand-written project agent profiles from one model to another after an approved review |
-| `node $toolkit worker start <name> <files>... [--resource resource:<name>]` | Reserves a worker's files (and named resources) through the Coordinator and creates its linked worktree under `.worktrees/` |
+| `node $toolkit worker start <name> <files>... --role <id> [--resource resource:<name>]` | Reserves a worker's files (and named resources) through the Coordinator and creates its linked worktree under `.worktrees/`. `--role` names the writing role it runs as; untyped, unknown or read-only roles are refused |
 | `node $toolkit worker status` / `worker finish <name>` | Lists workers; finishes one by refusing undeclared changes, fast-forwarding it into its branch and releasing its reservation |
 | `node $toolkit doctor` | Checks Node, settings, generated profiles, the role policy and the Codex hook (installed, current and trusted), with a fix for each problem |
 | `node $toolkit setup scan` | Read-only repository scan used by the setup skill: file types, hot-path candidates and how many files each role's default write scope covers |
 | `node $toolkit update-installs [--ref <sha>]` | After a release: re-pins Codex to the latest `main` (or the given commit) and refreshes the Codex and Claude Code installs. Close the Codex app first; it locks the old plugin folder |
 | `node $toolkit install-codex-hooks` | Installs the role guard as a Codex project hook; trust it once in Codex with `/hooks` |
 | `node $toolkit models eval ./eval.json` | Replays frozen tasks for each contender in throwaway worktrees and reports must-pass results per role |
-| `node $toolkit handoff check ./handoff.md` | Checks a handoff has a decision, a real base commit, repo-relative owned files, acceptance checks and a next owner |
+| `node $toolkit handoff check ./handoff.md` | Checks a handoff has a decision, a real base commit, repo-relative owned files, acceptance checks and a next owner that is an enabled role (or the owner); a Security Reviewer handoff must quote its named `trigger:` |
+| `node $toolkit usage scan [--since 14d\|YYYY-MM-DD] [--tests <regex>]` | Read-only scan of local Codex and Claude Code transcripts: agent waits by spawned role and by thread, timeout rate, waits with no live child, polling loops, background waits, test and gate command time (`--tests` sets the pattern), and the model's gap after test calls. Nothing leaves the machine |
 
 The toolkit wiki travels with the plugin. It holds the shared [role catalog](plugins/development-team-toolkit/toolkit-wiki/roles.json) and [workflow](plugins/development-team-toolkit/toolkit-wiki/workflow.md). Project settings, decisions, and evidence belong to the project. To pick up shared role changes, update the toolkit checkout and rerun `sync-codex` or `sync-claude` from the project.
 
@@ -115,6 +116,8 @@ Each role names a capability tier, and `modelTiers` in the role catalog maps tie
 For each task, contender and run, the harness checks out the base commit in a throwaway linked worktree, runs the contender there, runs every check, and removes the worktree. A run passes only when every check exits 0. The report gives pass counts and agent time per contender and role, plus each run's first failed check and changed-file count. Save it with the project's evidence. Contender commands run with your permissions, so write eval files yourself and keep them with the project. On Windows, bare command names such as `codex` or `npm` run through the shell and must use plain arguments; use an absolute executable path otherwise.
 
 Start each handoff from the [handoff template](plugins/development-team-toolkit/toolkit-wiki/handoff-template.md) and run `handoff check` before passing it on. The check exits 1 and lists what to fix.
+
+New initiatives start with the `memo` skill and [memo template](plugins/development-team-toolkit/toolkit-wiki/memo-template.md): a one-page memo from a one-question-at-a-time interview (what, for one real named person, not, done, smallest proof and hook, features), then build and don't-build lists, triage of every new ask, follow-ups, and rounds closed by a Done check. The workflow's [waiting](plugins/development-team-toolkit/toolkit-wiki/workflow.md#waiting), [review tiers](plugins/development-team-toolkit/toolkit-wiki/workflow.md#review-tiers) and [typed spawns](plugins/development-team-toolkit/toolkit-wiki/workflow.md#typed-spawns) sections say how the hub dispatches and waits.
 
 ## Role access and the guard
 

@@ -24,7 +24,7 @@ Sections marked required must be filled; the check names any that are missing.
 
 ## Next owner
 
-<!-- required: the role or person who acts next, e.g. developer, qa-code, owner -->
+<!-- required: the exact role id who acts next (developer, qa-code, toolkit-qa-code, ...) or "owner"; unknown names are refused -->
 
 ## Runtime
 
@@ -38,9 +38,11 @@ Sections marked required must be filled; the check names any that are missing.
 
 <!-- tests first: required on the project's hot paths (Test Engineer RED test evidence), unless this handoff goes to the Test Engineer -->
 <!-- release: yes when this handoff hands over a release candidate; then a Release Reviewer "go" is required -->
+<!-- trigger: required for a Security Reviewer handoff: the named trigger, e.g. "credentials (API token store)"; otherwise none -->
 - tests first: 
 - release: no
-- release reviewer: 
+- release reviewer:
+- trigger: none
 
 ## Evidence
 

@@ -185,6 +185,19 @@ test('handoff check names missing sections, unknown commits and paths outside th
   assert.deepEqual(JSON.parse(bad.stdout).problems, ['Base revision abcdef1 is not a commit in this repository.', 'Owned file "../outside" must be a repo-relative path.']);
   const empty = spawnSync(process.execPath, [cli, 'handoff', 'check', fileURLToPath(new URL('toolkit-wiki/handoff-template.md', plugin))], { cwd: root, encoding: 'utf8' });
   assert.equal(JSON.parse(empty.stdout).problems.length, 5);
+  // Typed next owners: a role id, its toolkit- profile name, or the owner; anything else is refused.
+  const owner = (next, gates = '') => `# Handoff\n\n## Decision\nD-2\n\n## Base revision\n${base}\n\n## Owned files\n- src/a.js\n\n## Acceptance checks\n- npm test\n\n## Next owner\n${next}\n${gates}`;
+  const checkOwner = async (next, gates) => {
+    await writeFile(join(root, 'owner.md'), owner(next, gates));
+    return JSON.parse(spawnSync(process.execPath, [cli, 'handoff', 'check', 'owner.md'], { cwd: root, encoding: 'utf8' }).stdout);
+  };
+  assert.equal((await checkOwner('toolkit-qa-code')).ok, true);
+  assert.equal((await checkOwner('owner')).ok, true);
+  assert.match((await checkOwner('Reviewer Bob')).problems[0], /not an enabled role.*never retry/);
+  // Security runs only on a named trigger, quoted in the handoff.
+  assert.match((await checkOwner('security-reviewer')).problems[0], /named trigger/);
+  assert.match((await checkOwner('security-reviewer', '\n## Gates\n- trigger: none\n')).problems[0], /named trigger/);
+  assert.equal((await checkOwner('security-reviewer', '\n## Gates\n- trigger: credentials (API token store)\n')).ok, true);
 });
 
 test('models eval replays tasks in throwaway worktrees and scores must-pass checks per contender', async (t) => {
