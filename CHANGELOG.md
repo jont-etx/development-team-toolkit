@@ -3,6 +3,10 @@
 Releases are tagged `vX.Y.Z`. `node scripts/release.mjs <version>` adds the next entry from the commits since the
 last tag.
 
+## 0.14.0 - 2026-11-24
+
+- feat(coordinator): Authorize scoped staging and cooperative hotfix handoff
+
 ## 0.13.1 - 2026-11-24
 
 - Correct the usage scan, its figures and the waiting rule
