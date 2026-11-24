@@ -16,7 +16,9 @@ const fields = {
   request: [['owner', 'resources'], []],
   claim: [['id'], ['capability']],
   cancel: [['id'], ['capability']],
-  release: [['id'], ['capability', 'cleanup_evidence']],
+  release: [['id'], ['capability', 'cleanup_evidence', 'generation']],
+  'check-held': [['id', 'resource'], ['capability', 'candidate']],
+  'release-check': [['id', 'generation', 'candidate', 'mode'], ['capability']],
 };
 
 const tool = {
@@ -26,6 +28,10 @@ const tool = {
     'Pass project as the absolute path of the checkout you are working in.',
     'status takes {}. request takes owner and resources (strings such as file:src/app or resource:browser-qa) and returns an id; its private credential stays in local Git state, never in this result.',
     'claim, release and cancel take that id. release can also take cleanup_evidence, a project-relative evidence file.',
+    'check-held takes id and resource, with candidate required for an authorized hotfix.',
+    'release-check returns the supervisor-authorized release record for the current held generation.',
+    'Hotfix holders checkpoint through the local CLI with their capability on stdin.',
+    'Release a priority hotfix or resumed holder by supplying the current generation.',
     'Pass capability only for a credential a supervisor issued during recovery.',
     'Supervisor operations use the local toolkit CLI.',
   ].join(' '),
@@ -41,7 +47,7 @@ const tool = {
 };
 
 function projectDirectory(requested) {
-  const candidates = [requested, process.env.CLAUDE_PROJECT_DIR, process.cwd()];
+  const candidates = requested === undefined ? [process.env.CLAUDE_PROJECT_DIR, process.cwd()] : [requested];
   for (const candidate of candidates) {
     if (typeof candidate !== 'string' || !candidate || !isAbsolute(candidate)) continue;
     let resolved;
@@ -58,14 +64,17 @@ function projectDirectory(requested) {
 
 // Request credentials live beside the Coordinator store, one file per request ID, so agents only handle IDs.
 function credentialFile(project, id) {
-  const common = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+  const git = process.env.CPD_COORDINATOR_GIT || 'git';
+  if (process.env.CPD_COORDINATOR_GIT && !isAbsolute(git)) throw new Error('Git pin must be absolute.');
+  const common = execFileSync(git, ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
     cwd: project, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
   }).trim();
   return join(common, 'development-team-credentials', id);
 }
 
 async function withStoredCredential(project, operation, payload) {
-  if (!['claim', 'cancel', 'release'].includes(operation) || !payload || typeof payload !== 'object' || payload.capability !== undefined) return payload;
+  if (!['claim', 'cancel', 'release', 'check-held', 'release-check'].includes(operation)
+      || !payload || typeof payload !== 'object' || payload.capability !== undefined) return payload;
   if (!uuid.test(payload.id ?? '')) throw new Error('Invalid request ID.');
   try {
     return { ...payload, capability: (await readFile(credentialFile(project, payload.id), 'utf8')).trim() };
@@ -74,7 +83,7 @@ async function withStoredCredential(project, operation, payload) {
   }
 }
 
-function commandFor(operation, payload) {
+function commandFor(project, operation, payload) {
   if (!Object.hasOwn(fields, operation) || !payload || typeof payload !== 'object' || Array.isArray(payload)) {
     throw new Error('Unsupported Coordinator operation.');
   }
@@ -94,12 +103,30 @@ function commandFor(operation, payload) {
     return { args: [...args, owner, ...resources], input: '' };
   }
   if (operation === 'status') return { args, input: '' };
-  const { id, capability, cleanup_evidence: evidence } = payload;
-  if (typeof id !== 'string' || typeof capability !== 'string' || !capabilityPattern.test(capability)
+  const { id, capability, cleanup_evidence: evidence, generation, resource, candidate, mode } = payload;
+  if (typeof id !== 'string' || !uuid.test(id) || typeof capability !== 'string' || !capabilityPattern.test(capability)
       || (evidence !== undefined && typeof evidence !== 'string')) {
     throw new Error('Invalid request credentials or cleanup evidence.');
   }
-  return { args: [...args, id, ...(evidence === undefined ? [] : [evidence])], input: capability };
+  if (generation !== undefined && (!Number.isSafeInteger(generation) || generation < 1)) throw new Error('Invalid grant generation.');
+  args.push(id);
+  if (operation === 'release-check') {
+    if (!Number.isSafeInteger(generation) || generation < 1 || typeof candidate !== 'string'
+        || !['scoped', 'hotfix'].includes(mode)) throw new Error('Invalid release check.');
+    args.push(String(generation), candidate, mode);
+  }
+  if (operation === 'check-held') {
+    if (typeof resource !== 'string' || (candidate !== undefined && typeof candidate !== 'string')) {
+      throw new Error('Invalid resource or candidate.');
+    }
+    args.push(resource);
+    if (candidate !== undefined) args.push(candidate);
+  }
+  if (operation === 'release') {
+    if (evidence !== undefined) args.push(evidence);
+    if (generation !== undefined) args.push(`--generation=${generation}`);
+  }
+  return { args, input: capability };
 }
 
 function runCli(project, { args, input }) {
@@ -131,7 +158,7 @@ async function callTool(params) {
   const { operation, payload, project } = params.arguments ?? {};
   try {
     const directory = projectDirectory(project);
-    let result = await runCli(directory, commandFor(operation, await withStoredCredential(directory, operation, payload)));
+    let result = await runCli(directory, commandFor(directory, operation, await withStoredCredential(directory, operation, payload)));
     if (operation === 'request') {
       const file = credentialFile(directory, result.id);
       await mkdir(join(file, '..'), { recursive: true });

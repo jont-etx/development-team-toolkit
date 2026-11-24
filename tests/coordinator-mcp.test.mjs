@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -92,4 +92,55 @@ test('both plugin manifests ship the same Coordinator server and version', async
   assert.deepEqual(codexServer.args, ['./bin/coordinator-mcp.mjs']);
   assert.equal(codexServer.default_tools_approval_mode, 'approve');
   assert.deepEqual(claude.mcpServers.coordinator.args, ['${CLAUDE_PLUGIN_ROOT}/bin/coordinator-mcp.mjs']);
+});
+
+test('MCP checks held grants and accepts checkpoint evidence from the requested checkout only', async (t) => {
+  const project = await realpath(await mkdtemp(join(tmpdir(), 'toolkit-mcp-hotfix-')));
+  t.after(() => rm(project, { recursive: true, force: true }));
+  spawnSync('git', ['init', '-q', project]);
+  const mcp = connect(plugin, { CLAUDE_PROJECT_DIR: project });
+  t.after(mcp.close);
+  const call = async (operation, payload, directory = project) => (await mcp.rpc('tools/call', {
+    name: 'coordinator_call', arguments: { operation, payload, project: directory },
+  })).result;
+  const stage = 'resource:staging';
+  const { id } = (await call('request', { owner: 'holder', resources: [stage] })).structuredContent.result;
+  assert.equal((await call('check-held', { id, resource: stage })).isError, true);
+  const grant = (await call('claim', { id })).structuredContent.result;
+  const checked = (await call('check-held', { id, resource: stage })).structuredContent.result;
+  assert.equal(checked.id, id);
+  assert.equal(checked.generation, grant.generation);
+  assert.equal(checked.project, await realpath(join(project, '.git')));
+  assert.equal(checked.capability, undefined);
+  const capability = (await readFile(join(project, '.git', 'development-team-credentials', id), 'utf8')).trim();
+  assert.ok(!JSON.stringify(checked).includes(capability));
+  assert.equal((await call('check-held', { id, resource: stage }, join(project, 'missing'))).isError, true);
+  const urgent = (await call('request', { owner: 'urgent', resources: [stage] })).structuredContent.result;
+  const supervisor = 'a'.repeat(64);
+  const cliRun = (...args) => spawnSync(process.execPath, [cli, 'coordinate', ...args], {
+    cwd: project, input: `${supervisor}\n`, encoding: 'utf8',
+  });
+  assert.equal(cliRun('authority-init').status, 0);
+  const record = { version: 1, generation: grant.generation, old: 'a'.repeat(40), build: '42411483',
+    new: 'b'.repeat(40), tree: 'c'.repeat(40), local_ref: 'refs/heads/cpd-scoped/fixture',
+    remote: 'origin', url: 'https://example.invalid/repo', ref: 'refs/heads/Development',
+    selected: ['d'.repeat(40)], approvals: ['owner-ref'], excluded: [], source_ref: 'refs/heads/Development', mode: 'scoped' };
+  assert.equal(cliRun('authorize-release', id, JSON.stringify(record)).status, 0);
+  const scoped = await call('release-check', { id, generation: grant.generation, candidate: record.new, mode: 'scoped' });
+  assert.equal(scoped.structuredContent.result.mode, 'scoped');
+  assert.ok(!JSON.stringify(scoped).includes(capability));
+  assert.equal((await call('release-check', { id, generation: grant.generation, candidate: record.new, mode: 'hotfix' })).isError, true);
+  const candidate = 'c'.repeat(40);
+  assert.equal(cliRun('authorize-hotfix', urgent.id, candidate, 'owner', 'approval-1').status, 0);
+  await writeFile(join(project, 'checkpoint.json'), JSON.stringify({ [stage]: 'staging-idle' }));
+  const checkpoint = { id, generation: grant.generation, checkpoint_evidence: 'checkpoint.json' };
+  assert.equal((await call('checkpoint-hotfix', { ...checkpoint, checkpoint_evidence: '../checkpoint.json' })).isError, true);
+  assert.equal((await call('checkpoint-hotfix', checkpoint)).isError, true);
+  assert.equal((await call('checkpoint-hotfix', { ...checkpoint, capability })).isError, true);
+  const safeCheckpoint = spawnSync(process.execPath, [cli, 'coordinate', 'checkpoint-hotfix', id,
+    String(grant.generation), 'checkpoint.json'], { cwd: project, input: `${capability}\n`, encoding: 'utf8' });
+  assert.equal(safeCheckpoint.status, 0, safeCheckpoint.stderr);
+  const pending = (await call('claim', { id: urgent.id })).structuredContent.result;
+  assert.equal((await call('check-held', { id: urgent.id, resource: stage, candidate })).structuredContent.result.generation, pending.generation);
+  assert.equal((await call('release', { id: urgent.id, generation: pending.generation })).structuredContent.result.state, 'released');
 });

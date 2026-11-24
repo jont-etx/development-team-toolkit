@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
 import { access, mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { pathToFileURL } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
 
 const cli = fileURLToPath(new URL('../plugins/development-team-toolkit/bin/toolkit.mjs', import.meta.url));
 const checkout = fileURLToPath(new URL('..', import.meta.url));
@@ -59,11 +61,157 @@ async function command(cwd, args, input = '') {
 
 async function denied(cwd, args, input = '') {
   const result = await invoke(cwd, ['coordinate', ...args], input);
-  assert.notEqual(result.status, 0, `Unexpected success: ${args.join(' ')}`);
+  assert.notEqual(result.status, 0, `Unexpected success: ${args[0]}`);
 }
 
 const request = (cwd, owner, ...resources) => command(cwd, ['request', owner, ...resources]);
 const act = (cwd, action, ticket, ...args) => command(cwd, [action, ticket.id, ...args], ticket.capability);
+
+test('supervisor binds an immutable exact staging authorization to the held generation', async (t) => {
+  const { project } = await fixture(t);
+  await command(project, ['authority-init'], supervisor);
+  const ticket = await request(project, 'release', 'resource:staging');
+  const held = await act(project, 'claim', ticket);
+  const record = { version: 1, generation: held.generation, old: 'a'.repeat(40), build: '42411483',
+    new: 'b'.repeat(40), tree: 'c'.repeat(40), local_ref: 'refs/heads/cpd-scoped/fixture',
+    remote: 'origin', url: 'https://example.invalid/repo', ref: 'refs/heads/Development',
+    selected: ['d'.repeat(40)], approvals: ['owner-ref'], excluded: ['e'.repeat(40)],
+    source_ref: 'refs/heads/Development', mode: 'scoped' };
+  const authorize = ['authorize-release', ticket.id, JSON.stringify(record)];
+  await denied(project, authorize, ticket.capability);
+  await denied(project, ['authorize-release', ticket.id, JSON.stringify({ ...record, url: 'https://example.invalid/repo?token=secret' })], supervisor);
+  await denied(project, ['authorize-release', ticket.id, JSON.stringify({ ...record, excluded: record.selected })], supervisor);
+  await denied(project, ['authorize-release', ticket.id, JSON.stringify({ ...record, mode: 'hotfix', source_ref: 'refs/heads/cpd-hotfix/fixture', hotfix_signer: 'owner', hotfix_approval_ref: 'ref' })], supervisor);
+  const escapedCredential = JSON.stringify({ ...record, approvals: [ticket.capability] }).replace(ticket.capability, `\\u00${ticket.capability.charCodeAt(0).toString(16)}${ticket.capability.slice(1)}`);
+  await denied(project, ['authorize-release', ticket.id, escapedCredential], supervisor);
+  await command(project, authorize, supervisor);
+  await denied(project, authorize, supervisor);
+  const checked = await act(project, 'release-check', ticket, String(held.generation), record.new, record.mode);
+  assert.equal(checked.mode, 'scoped');
+  assert.deepEqual(checked.selected, record.selected);
+  assert.equal(JSON.stringify(checked).includes(ticket.capability), false);
+  await denied(project, ['release-check', ticket.id, String(held.generation + 1), record.new, record.mode], ticket.capability);
+  await denied(project, ['release-check', ticket.id, String(held.generation), 'f'.repeat(40), record.mode], ticket.capability);
+  await denied(project, ['release-check', ticket.id, String(held.generation), record.new, 'hotfix'], ticket.capability);
+  await act(project, 'release', ticket);
+  await denied(project, ['release-check', ticket.id, String(held.generation), record.new, record.mode], ticket.capability);
+});
+
+test('hotfix release authorization requires explicit supervisor sign-off and cannot be inferred from a held grant', async (t) => {
+  const { project } = await fixture(t);
+  await command(project, ['authority-init'], supervisor);
+  const ticket = await request(project, 'hotfix', 'resource:staging');
+  await command(project, ['authorize-hotfix', ticket.id, 'b'.repeat(40), 'mark', 'hot-zone-ref'], supervisor);
+  const held = await act(project, 'claim', ticket);
+  const record = { version: 1, generation: held.generation, old: 'a'.repeat(40), build: '42411483',
+    new: 'b'.repeat(40), tree: 'c'.repeat(40), local_ref: 'refs/heads/cpd-scoped/fixture',
+    remote: 'origin', url: 'https://example.invalid/repo', ref: 'refs/heads/Development',
+    selected: ['d'.repeat(40)], approvals: ['owner-ref'], excluded: [], source_ref: 'refs/heads/cpd-hotfix/fixture', mode: 'hotfix' };
+  await denied(project, ['release-check', ticket.id, String(held.generation), record.new, 'hotfix'], ticket.capability);
+  await denied(project, ['authorize-release', ticket.id, JSON.stringify(record)], supervisor);
+  await denied(project, ['authorize-release', ticket.id, JSON.stringify({ ...record, hotfix_signer: 'other', hotfix_approval_ref: 'ref' })], supervisor);
+  const signed = { ...record, hotfix_signer: 'Mark Berg', hotfix_approval_ref: 'hot-zone-ref' };
+  await denied(project, ['authorize-release', ticket.id, JSON.stringify({ ...signed, hotfix_approval_ref: 'other-ref' })], supervisor);
+  await denied(project, ['authorize-release', ticket.id, JSON.stringify({ ...signed, new: 'f'.repeat(40) })], supervisor);
+  await denied(project, ['authorize-release', ticket.id, JSON.stringify({ ...signed, mode: 'scoped', source_ref: 'refs/heads/Development', hotfix_signer: undefined, hotfix_approval_ref: undefined })], supervisor);
+  await command(project, ['authorize-release', ticket.id, JSON.stringify(signed)], supervisor);
+  const checked = await act(project, 'release-check', ticket, String(held.generation), record.new, 'hotfix');
+  assert.equal(checked.hotfix_signer, 'Mark Berg');
+  const db = new DatabaseSync(join(project, '.git', 'development-team-coordinator.sqlite'));
+  db.prepare('UPDATE coordinator_hotfix SET signer = NULL WHERE singleton = 1').run();
+  db.close();
+  await denied(project, ['release-check', ticket.id, String(held.generation), record.new, 'hotfix'], ticket.capability);
+  await denied(project, ['release-check', ticket.id, String(held.generation), record.new, 'scoped'], ticket.capability);
+  await denied(project, ['release-check', ticket.id, String(held.generation), 'f'.repeat(40), 'hotfix'], ticket.capability);
+});
+
+test('authorized staging hotfix waits for a safe checkpoint, then the holder resumes first', async (t) => {
+  const { root, project, worktree } = await fixture(t);
+  await command(project, ['authority-init'], supervisor);
+  const stage = 'resource:staging';
+  const candidate = 'd'.repeat(40);
+  const holder = await request(project, 'holder', stage, 'resource:fixture');
+  const ordinary = await request(worktree, 'ordinary', stage);
+  const hotfix = await request(project, 'hotfix', stage);
+  const duplicate = await request(project, 'second-hotfix', stage);
+  const fixtureUser = await request(project, 'fixture-user', 'resource:fixture');
+  await act(project, 'claim', holder);
+  const before = await act(worktree, 'check-held', holder, stage);
+  assert.deepEqual(Object.keys(before).sort(), ['generation', 'id', 'project']);
+  await denied(project, ['check-held', holder.id, stage], successor);
+  await denied(project, ['check-held', holder.id, 'resource:other'], holder.capability);
+  await denied(project, ['check-held', hotfix.id, stage], hotfix.capability);
+  const other = join(root, 'unrelated');
+  git(root, 'init', other);
+  await denied(other, ['check-held', holder.id, stage], holder.capability);
+
+  const authorization = ['authorize-hotfix', hotfix.id, candidate, 'mark', 'release-approval-42'];
+  await denied(project, authorization, hotfix.capability);
+  await denied(project, [...authorization.slice(0, -1), `receipt available through ${supervisor}`], supervisor);
+  await command(project, authorization, supervisor);
+  await denied(project, authorization, supervisor);
+  await denied(project, ['authorize-hotfix', duplicate.id, candidate, 'owner', 'other-approval'], supervisor);
+  assert.equal((await act(project, 'claim', hotfix)).state, 'queued');
+  await denied(project, ['checkpoint-hotfix', holder.id, String(before.generation + 1), 'checkpoint.json'], holder.capability);
+  const evidence = join(root, 'checkpoint.json');
+  await writeFile(evidence, JSON.stringify({ [stage]: 'staging-idle' }));
+  await denied(project, ['checkpoint-hotfix', holder.id, String(before.generation), evidence], holder.capability);
+  await writeFile(evidence, JSON.stringify({ [stage]: 'staging-idle', 'resource:fixture': 'fixture-clean' }));
+  await denied(project, ['checkpoint-hotfix', holder.id, String(before.generation), evidence], hotfix.capability);
+  await writeFile(evidence, JSON.stringify({ [stage]: `staging-idle ${holder.capability}`, 'resource:fixture': 'fixture-clean' }));
+  await denied(project, ['checkpoint-hotfix', holder.id, String(before.generation), evidence], holder.capability);
+  await writeFile(evidence, JSON.stringify({ [stage]: 'staging-idle', 'resource:fixture': 'fixture-clean' }));
+  await act(project, 'checkpoint-hotfix', holder, String(before.generation), evidence);
+  await denied(project, ['checkpoint-hotfix', holder.id, String(before.generation), evidence], holder.capability);
+  assert.equal((await act(project, 'claim', ordinary)).state, 'queued');
+  assert.equal((await act(project, 'claim', fixtureUser)).state, 'queued');
+  assert.equal((await act(project, 'claim', holder)).state, 'queued');
+  assert.equal((await act(project, 'claim', hotfix)).state, 'held');
+  const priority = await act(project, 'check-held', hotfix, stage, candidate);
+  await denied(project, ['check-held', hotfix.id, stage, 'e'.repeat(40)], hotfix.capability);
+  assert.ok(priority.generation > before.generation);
+  await act(project, 'release', hotfix, `--generation=${priority.generation}`);
+  assert.equal((await act(project, 'claim', ordinary)).state, 'queued');
+  assert.equal((await act(project, 'claim', holder)).state, 'held');
+  const resumed = await act(project, 'check-held', holder, stage);
+  assert.ok(resumed.generation > priority.generation);
+  await denied(project, ['release', holder.id, `--generation=${before.generation}`], holder.capability);
+  await denied(project, ['release', holder.id], holder.capability);
+  await act(project, 'release', holder, `--generation=${resumed.generation}`);
+  assert.equal((await act(worktree, 'claim', ordinary)).state, 'held');
+});
+
+test('hotfix cancellation and quarantine preserve staging exclusivity', async (t) => {
+  const { root, project } = await fixture(t);
+  const stage = 'resource:staging';
+  const candidate = 'd'.repeat(40);
+  await command(project, ['authority-init'], supervisor);
+  const holder = await request(project, 'holder', stage);
+  const ordinary = await request(project, 'ordinary', stage);
+  await act(project, 'claim', holder);
+  const before = await act(project, 'check-held', holder, stage);
+  const hotfix = await request(project, 'hotfix', stage);
+  await command(project, ['authorize-hotfix', hotfix.id, candidate, 'owner', 'approval-a'], supervisor);
+  const evidence = join(root, 'checkpoint.json');
+  await writeFile(evidence, JSON.stringify({ [stage]: 'staging-idle' }));
+  await act(project, 'checkpoint-hotfix', holder, String(before.generation), evidence);
+  await act(project, 'cancel', hotfix);
+  assert.equal((await act(project, 'claim', ordinary)).state, 'queued');
+  await act(project, 'claim', holder);
+  const resumed = await act(project, 'check-held', holder, stage);
+  assert.ok(resumed.generation > before.generation);
+  const second = await request(project, 'second-hotfix', stage);
+  await command(project, ['authorize-hotfix', second.id, candidate, 'owner', 'approval-b'], supervisor);
+  await act(project, 'checkpoint-hotfix', holder, String(resumed.generation), evidence);
+  await act(project, 'claim', second);
+  await command(project, ['quarantine', second.id, 'worker-unknown'], supervisor);
+  await denied(project, ['check-held', second.id, stage, candidate], second.capability);
+  assert.equal((await act(project, 'claim', ordinary)).state, 'queued');
+  assert.equal((await act(project, 'claim', holder)).state, 'queued');
+  await command(project, ['recover', second.id, 'worker-stopped'], `${supervisor}\n${replacement}`);
+  await command(project, ['cancel', second.id], replacement);
+  assert.equal((await act(project, 'claim', holder)).state, 'held');
+});
 
 test('handoff keeps active claims and FIFO queue and fences the former supervisor', async (t) => {
   const { project, worktree } = await fixture(t);
@@ -219,7 +367,7 @@ test('supervisor withdraws an abandoned queued request in one step and finished 
   // Age the finished requests past the one-week window; the next request prunes them.
   const { DatabaseSync } = await import('node:sqlite');
   const db = new DatabaseSync(join(project, '.git', 'development-team-coordinator.sqlite'));
-  db.prepare("UPDATE coordinator_requests SET requested_at = '2020-01-01T00:00:00.000Z' WHERE state != 'held'").run();
+  db.prepare("UPDATE coordinator_grants SET requested_at = '2020-01-01T00:00:00.000Z' WHERE state != 'held'").run();
   db.close();
   await request(project, 'later', 'resource:other');
   const remaining = (await command(project, ['status'])).requests.map((entry) => entry.owner);
@@ -264,21 +412,35 @@ try {
   assert.equal((await command(project, ['status'])).fixtures['resource:fixture'], 'delete');
 });
 
-test('legacy migration preserves state and prevents the old binary from mutating it', async (t) => {
-  const { root, project } = await fixture(t);
-  const oldSource = git(checkout, 'show', '3e9e436:plugins/development-team-toolkit/bin/coordinator.mjs');
-  const legacy = join(root, 'old-coordinator.mjs');
-  const wrapper = join(root, 'old-wrapper.mjs');
-  await writeFile(legacy, oldSource);
-  await writeFile(wrapper, "import { coordinate } from './old-coordinator.mjs'; try { console.log(JSON.stringify(await coordinate(process.argv.slice(2)))); } catch (error) { console.error(error.message); process.exitCode = 1; }\n");
-  const oldResult = await invoke(project, ['request', 'legacy', 'resource:runner'], '', wrapper);
-  assert.equal(oldResult.status, 0, oldResult.stderr);
-  const legacyClaim = JSON.parse(oldResult.stdout);
-  const held = await invoke(project, ['claim', legacyClaim.id], legacyClaim.capability, wrapper);
-  assert.equal(JSON.parse(held.stdout).state, 'held');
-  await command(project, ['authority-init'], supervisor);
-  assert.equal((await command(project, ['status'])).requests.find((item) => item.id === legacyClaim.id).state, 'held');
-  const staleRelease = await invoke(project, ['release', legacyClaim.id], legacyClaim.capability, wrapper);
-  assert.notEqual(staleRelease.status, 0);
-  assert.equal((await command(project, ['status'])).requests.find((item) => item.id === legacyClaim.id).state, 'held');
-});
+for (const [version, table] of [[1, 'requests'], [2, 'coordinator_requests']]) {
+  test(`v${version} migration preserves held grants and fences legacy writes`, async (t) => {
+    const { project } = await fixture(t);
+    const { DatabaseSync } = await import('node:sqlite');
+    const database = join(project, '.git', 'development-team-coordinator.sqlite');
+    const legacy = new DatabaseSync(database);
+    const id = randomUUID();
+    const digest = createHash('sha256').update(replacement).digest();
+    legacy.exec(`CREATE TABLE ${table} (
+      sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, capability_hash BLOB NOT NULL,
+      owner TEXT NOT NULL, resources TEXT NOT NULL, state TEXT NOT NULL,
+      requested_at TEXT, claimed_at TEXT
+    ); PRAGMA user_version = ${version};`);
+    if (version === 2) legacy.exec('CREATE VIEW requests AS SELECT * FROM coordinator_requests');
+    legacy.prepare(`INSERT INTO ${table} (id, capability_hash, owner, resources, state) VALUES (?, ?, ?, ?, ?)`)
+      .run(id, digest, 'legacy', JSON.stringify(['resource:runner']), 'held');
+    legacy.close();
+
+    await command(project, ['authority-init'], supervisor);
+    const held = await command(project, ['check-held', id, 'resource:runner'], replacement);
+    assert.equal(held.id, id);
+    assert.ok(held.generation > 0);
+    const stale = new DatabaseSync(database);
+    try {
+      assert.throws(() => stale.prepare(`UPDATE ${table} SET state = 'released' WHERE id = ?`).run(id), /cannot modify .*view/);
+    } finally {
+      stale.close();
+    }
+    assert.equal((await command(project, ['status'])).requests.find((item) => item.id === id).state, 'held');
+    await command(project, ['release', id], replacement);
+  });
+}
