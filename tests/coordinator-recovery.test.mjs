@@ -95,21 +95,21 @@ test('a reserved Critical slot requires exact approval and a passing run request
 
   const ordinary = await request(project, 'ordinary', stage);
   const staging = await request(worktree, 'critical', stage);
-  const receipt = join(root, 'critical-run.json');
-  const evidence = { source_revision: candidate, source_dirty: false, database: 'cpd_local_test_critical',
-    database_oid: 123, outcome: 'green', expected_tests: 1, actual_tests: 1, child_exit: 0, skips: 0 };
+  const receipt = createHash('sha256').update('native runner evidence').digest('hex');
   const complete = ['request-hotfix-priority', hot.id, String(held.generation), staging.id, receipt];
   const credentials = `${hot.capability}\n${staging.capability}`;
-  await writeFile(receipt, JSON.stringify({ ...evidence, outcome: 'failed' }));
-  await denied(worktree, complete, credentials);
-  await writeFile(receipt, JSON.stringify({ ...evidence, source_revision: 'e'.repeat(40) }));
-  await denied(worktree, complete, credentials);
-  await writeFile(receipt, JSON.stringify(evidence));
+  await denied(worktree, [...complete.slice(0, -1), join(root, 'private.json')], credentials);
+  await denied(worktree, ['request-hotfix-priority', hot.id, String(held.generation + 1), staging.id, receipt], credentials);
   await denied(worktree, complete, `${hot.capability}\n${ordinary.capability}`);
-  assert.equal((await command(worktree, complete, credentials)).state, 'requested');
-  assert.equal((await command(worktree, complete, credentials)).state, 'requested');
+  assert.equal((await command(worktree, complete, credentials)).state, 'verification-requested');
+  assert.equal((await command(worktree, complete, credentials)).state, 'verification-requested');
+  await denied(worktree, [...complete.slice(0, -1), 'e'.repeat(64)], credentials);
   assert.equal((await act(worktree, 'claim', staging)).state, 'queued');
-  await command(project, ['authorize-hotfix', staging.id, candidate, 'owner', 'release-ref'], supervisor);
+  const approval = ['authorize-hotfix', staging.id, candidate, 'owner', 'release-ref'];
+  await denied(project, approval, supervisor);
+  await denied(project, [...approval, String(held.generation + 1), receipt], supervisor);
+  await denied(project, [...approval, String(held.generation), 'e'.repeat(64)], supervisor);
+  await command(project, [...approval, String(held.generation), receipt], supervisor);
   assert.equal((await act(project, 'claim', ordinary)).state, 'queued');
   assert.equal((await act(worktree, 'claim', staging)).state, 'held');
   await act(worktree, 'release', hot, `--generation=${held.generation}`);

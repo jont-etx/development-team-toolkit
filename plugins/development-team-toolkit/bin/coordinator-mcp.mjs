@@ -19,7 +19,7 @@ const fields = {
   release: [['id'], ['capability', 'cleanup_evidence', 'generation']],
   'check-held': [['id', 'resource'], ['capability', 'candidate']],
   'release-check': [['id', 'generation', 'candidate', 'mode'], ['capability']],
-  'request-hotfix-priority': [['id', 'generation', 'staging_id', 'receipt'], ['capability', 'staging_capability']],
+  'request-hotfix-priority': [['id', 'generation', 'staging_id', 'receipt_sha256'], ['capability', 'staging_capability']],
 };
 
 const tool = {
@@ -32,7 +32,7 @@ const tool = {
     'check-held takes id and resource, with candidate required for an authorized hotfix.',
     'release-check returns the supervisor-authorized release record for the current held generation.',
     'Hotfix holders checkpoint through the local CLI with their capability on stdin.',
-    'After an authorized Critical local test passes, request-hotfix-priority takes its id, generation, staging_id, and the passing run.json receipt path.',
+    'After an authorized Critical local test passes, request-hotfix-priority takes its id, generation, staging_id, and receipt_sha256 for supervisor verification.',
     'Release a priority hotfix or resumed holder by supplying the current generation.',
     'Pass capability only for a credential a supervisor issued during recovery.',
     'Supervisor operations use the local toolkit CLI.',
@@ -125,13 +125,13 @@ function commandFor(project, operation, payload) {
     if (candidate !== undefined) args.push(candidate);
   }
   if (operation === 'request-hotfix-priority') {
-    const { staging_id: stagingId, staging_capability: stagingCapability, receipt } = payload;
+    const { staging_id: stagingId, staging_capability: stagingCapability, receipt_sha256: receiptDigest } = payload;
     if (!Number.isSafeInteger(generation) || !uuid.test(stagingId ?? '')
         || typeof stagingCapability !== 'string' || !capabilityPattern.test(stagingCapability)
-        || typeof receipt !== 'string' || !receipt || receipt.length > 4096) {
+        || typeof receiptDigest !== 'string' || !/^[0-9a-f]{64}$/.test(receiptDigest)) {
       throw new Error('Priority needs a grant generation, staging request, and Critical test receipt.');
     }
-    return { args: [...args, String(generation), stagingId, receipt], input: `${capability}\n${stagingCapability}` };
+    return { args: [...args, String(generation), stagingId, receiptDigest], input: `${capability}\n${stagingCapability}` };
   }
   if (operation === 'release') {
     if (evidence !== undefined) args.push(evidence);

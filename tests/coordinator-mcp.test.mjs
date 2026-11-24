@@ -118,16 +118,12 @@ test('Critical priority over MCP uses both stored credentials and waits for supe
   const candidate = 'c'.repeat(40);
   runSupervisor('authorize-critical-test', critical.id, candidate, 'critical-approval');
   const { generation } = await call('claim', { id: critical.id });
-  const receipt = join(project, 'run.json');
-  await writeFile(receipt, JSON.stringify({
-    outcome: 'green', source_revision: candidate, source_dirty: false, child_exit: 0,
-    skips: 0, expected_tests: 1, actual_tests: 1, database_oid: 1000,
-  }));
+  const receipt = 'e'.repeat(64);
   assert.deepEqual(await call('request-hotfix-priority',
-    { id: critical.id, generation, staging_id: stage.id, receipt }),
-    { id: stage.id, candidate, state: 'requested' });
+    { id: critical.id, generation, staging_id: stage.id, receipt_sha256: receipt }),
+    { id: stage.id, candidate, state: 'verification-requested' });
   assert.equal((await call('claim', { id: stage.id })).state, 'queued');
-  assert.equal((await call('status', {})).requests.find((row) => row.id === stage.id).priority, 'requested');
+  assert.equal((await call('status', {})).requests.find((row) => row.id === stage.id).priority, 'verification-requested');
   assert.equal((await call('release', { id: critical.id, generation })).state, 'released');
 });
 

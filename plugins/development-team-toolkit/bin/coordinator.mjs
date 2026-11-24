@@ -360,20 +360,6 @@ function checkpointEvidence(db, resources, path) {
     : safeRef(evidence[name], 'checkpoint reference')]));
 }
 
-function criticalReceipt(path, candidate) {
-  const file = lstatSync(path);
-  if (!file.isFile() || file.size > 65536) throw new Error('Invalid Critical test receipt file.');
-  const raw = readFileSync(path);
-  const run = JSON.parse(raw);
-  if (run?.outcome !== 'green' || run.source_revision !== candidate || run.source_dirty !== false
-      || run.child_exit !== 0 || run.skips !== 0 || !Number.isSafeInteger(run.expected_tests)
-      || run.expected_tests < 1 || run.actual_tests !== run.expected_tests
-      || !Number.isSafeInteger(run.database_oid) || run.database_oid < 1) {
-    throw new Error('Critical priority requires a passing exact-candidate test receipt.');
-  }
-  return hash(raw).toString('hex');
-}
-
 async function readCapabilities(count) {
   let input = '';
   for await (const chunk of process.stdin) {
@@ -397,7 +383,7 @@ export async function coordinate(args, { loadPolicy } = {}) {
   }
   const counts = { status: [0], audit: [0], 'authority-init': [0], 'policy-sync': [0],
     handoff: [1], quarantine: [2], recover: [2, 3], withdraw: [2], claim: [1], release: [1, 2, 3],
-    cancel: [1], 'check-held': [2, 3], 'authorize-hotfix': [4], 'checkpoint-hotfix': [3],
+    cancel: [1], 'check-held': [2, 3], 'authorize-hotfix': [4, 6], 'checkpoint-hotfix': [3],
     'authorize-release': [2], 'release-check': [4], 'authorize-critical-test': [3],
     'request-hotfix-priority': [4] };
   if (command !== 'request' && !Object.hasOwn(counts, command)) {
@@ -440,13 +426,15 @@ export async function coordinate(args, { loadPolicy } = {}) {
         const policy = db.prepare('SELECT fixtures FROM coordinator_policy WHERE singleton = 1').get();
         const handoff = hotfixHandoff(db);
         const suspended = handoffInProgress(handoff) ? handoff.holder_id : null;
-        const priority = new Map(db.prepare('SELECT staging_id, candidate FROM coordinator_critical_tests WHERE staging_id IS NOT NULL')
-          .all().map((entry) => [entry.staging_id, entry.candidate]));
+        const priority = new Map(db.prepare(`SELECT staging_id, candidate AS critical_candidate,
+          test_id AS critical_test_id, generation AS critical_generation, receipt_sha256
+          FROM coordinator_critical_tests WHERE staging_id IS NOT NULL`).all()
+          .map(({ staging_id, ...proof }) => [staging_id, proof]));
         return { epoch: authority?.epoch ?? null, fixtures: policy ? JSON.parse(policy.fixtures) : {},
           requests: rows.map((row) => ({ ...row, state: quarantined.has(row.id) ? 'quarantined' : row.id === suspended ? 'suspended' : row.state,
             resources: JSON.parse(row.resources), age_seconds: age(row),
-            ...(priority.has(row.id) ? { critical_candidate: priority.get(row.id),
-              priority: row.id === handoff?.hotfix_id ? 'authorized' : 'requested' } : {}) })) };
+            ...(priority.has(row.id) ? { ...priority.get(row.id),
+              priority: row.id === handoff?.hotfix_id ? 'authorized' : 'verification-requested' } : {}) })) };
       }, 'DEFERRED');
     }
     if (command === 'audit') {
@@ -536,7 +524,7 @@ export async function coordinate(args, { loadPolicy } = {}) {
       }
       if (command === 'authorize-hotfix') {
         requireAuthority(db, capability);
-        const [id, candidate, signer, reference] = values;
+        const [id, candidate, signer, reference, verifiedGeneration, verifiedDigest] = values;
         if (!uuid.test(id) || !commitPattern.test(candidate) || !['owner', 'mark'].includes(signer)) {
           throw new Error('Hotfix approval requires an exact candidate and an owner or Mark sign-off.');
         }
@@ -545,13 +533,17 @@ export async function coordinate(args, { loadPolicy } = {}) {
         if (hotfix?.state !== 'queued' || !JSON.parse(hotfix.resources).includes(staging)) {
           throw new Error('Only a queued staging request can be authorized as a hotfix.');
         }
-        const tested = db.prepare('SELECT candidate FROM coordinator_critical_tests WHERE staging_id = ?').get(id);
-        if (tested && tested.candidate !== candidate) throw new Error('Priority request has a different tested candidate.');
+        const tested = db.prepare('SELECT candidate, test_id, generation, receipt_sha256 FROM coordinator_critical_tests WHERE staging_id = ?').get(id);
+        if (tested ? tested.candidate !== candidate || String(tested.generation) !== verifiedGeneration
+            || tested.receipt_sha256 !== verifiedDigest : verifiedGeneration !== undefined) {
+          throw new Error('Priority authorization must attest to the exact submitted Critical test evidence.');
+        }
         const approvalRef = safeRef(reference, 'hotfix approval reference');
         refuseCredentialInAudit(db, approvalRef);
         refuseCredentialInAudit(db, candidate);
         db.prepare('INSERT INTO coordinator_hotfix (singleton, hotfix_id, candidate, signer, approval_ref) VALUES (1, ?, ?, ?, ?)').run(id, candidate, signer, approvalRef);
-        audit(db, 'authorize-hotfix', id, { candidate, signer, approvalRef });
+        audit(db, 'authorize-hotfix', id, { candidate, signer, approvalRef,
+          ...(tested ? { verifiedCriticalTest: tested.test_id, generation: tested.generation, receipt: verifiedDigest } : {}) });
         return { id, candidate, state: 'authorized' };
       }
       if (command === 'withdraw') {
@@ -599,23 +591,25 @@ export async function coordinate(args, { loadPolicy } = {}) {
         ? db.prepare('SELECT * FROM coordinator_critical_tests WHERE test_id = ?').get(row.id)
         : null;
       if (command === 'request-hotfix-priority') {
-        const [, generation, stagingId, evidence] = values;
+        const [, generation, stagingId, receiptDigest] = values;
         if (!critical || !uuid.test(stagingId)) throw new Error('An authorized Critical test and a staging request are required.');
+        if (!/^[0-9a-f]{64}$/.test(receiptDigest)) throw new Error('A SHA-256 receipt digest is required.');
+        refuseCredentialInAudit(db, receiptDigest);
         const staged = authenticate(db, stagingId, nextCapability);
         requireGeneration(row, generation);
-        if (critical.staging_id === stagingId && critical.generation === row.generation) {
-          return { id: stagingId, candidate: critical.candidate, state: 'requested' };
+        const response = { id: stagingId, candidate: critical.candidate, state: 'verification-requested' };
+        if (critical.staging_id === stagingId && critical.generation === row.generation && critical.receipt_sha256 === receiptDigest) {
+          return response;
         }
         if (row.state !== 'held' || critical.staging_id || staged?.state !== 'queued'
             || staged.owner !== row.owner || !JSON.parse(staged.resources).includes(staging)
             || stagingId === handoff?.hotfix_id) {
           throw new Error('Priority needs a current Critical grant and its own queued staging request.');
         }
-        const verified = criticalReceipt(evidence, critical.candidate);
         db.prepare('UPDATE coordinator_critical_tests SET staging_id = ?, generation = ?, receipt_sha256 = ? WHERE test_id = ?')
-          .run(stagingId, row.generation, verified, row.id);
-        audit(db, 'request-hotfix-priority', stagingId, { testId: row.id, candidate: critical.candidate, receipt: verified });
-        return { id: stagingId, candidate: critical.candidate, state: 'requested' };
+          .run(stagingId, row.generation, receiptDigest, row.id);
+        audit(db, 'request-hotfix-priority', stagingId, { testId: row.id, candidate: critical.candidate, submittedReceipt: receiptDigest });
+        return response;
       }
       if (command === 'release-check') {
         const [, generation, candidate, mode] = values;
