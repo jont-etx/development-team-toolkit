@@ -17,4 +17,6 @@ For parallel work on one task, follow [parallel workers](../../toolkit-wiki/work
 
 The plugin ships the Coordinator MCP tool `coordinator_call`; pass `project` as the absolute path of the current Git checkout. It keeps request credentials in local Git state, so pass only request IDs to `claim`, `release` and `cancel`. If the project already has its own Coordinator, follow that authority and the project's handoff process instead.
 
+For isolated Odoo tests or a user-declared Critical fix, follow [isolated Odoo jobs](../../toolkit-wiki/workflow.md#isolated-odoo-jobs). Ask for the push deadline and time zone at Critical intake.
+
 For model reviews, run `node <plugin-root>/bin/toolkit.mjs models check` from the project root, use `models eval <eval.json>` to replay frozen tasks, and follow the [model review workflow](../../toolkit-wiki/workflow.md#model-review). Change tiers or retarget profiles only after the owner approves the evaluation result.

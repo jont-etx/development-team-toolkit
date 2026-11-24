@@ -3,6 +3,12 @@
 Releases are tagged `vX.Y.Z`. `node scripts/release.mjs <version>` adds the next entry from the commits since the
 last tag.
 
+## 0.15.0 - 2026-11-24
+
+- Add two routine isolated Odoo test slots and one supervisor-authorized Critical slot.
+- Request staging priority after a passing Critical run and retain the existing release approvals.
+- Ask for the push deadline at Critical intake and document how to reuse evidence and avoid redundant tests.
+
 ## 0.14.0 - 2026-11-24
 
 - feat(coordinator): Authorize scoped staging and cooperative hotfix handoff

@@ -94,6 +94,43 @@ test('both plugin manifests ship the same Coordinator server and version', async
   assert.deepEqual(claude.mcpServers.coordinator.args, ['${CLAUDE_PLUGIN_ROOT}/bin/coordinator-mcp.mjs']);
 });
 
+test('Critical priority over MCP uses both stored credentials and waits for supervisor approval', async (t) => {
+  const project = await realpath(await mkdtemp(join(tmpdir(), 'toolkit-mcp-critical-')));
+  t.after(() => rm(project, { recursive: true, force: true }));
+  spawnSync('git', ['init', '-q', project]);
+  const mcp = connect(plugin);
+  t.after(mcp.close);
+  async function call(operation, payload) {
+    const { result } = await mcp.rpc('tools/call', {
+      name: 'coordinator_call', arguments: { operation, payload, project },
+    });
+    assert.equal(result.isError, undefined, result.content[0]?.text);
+    return result.structuredContent.result;
+  }
+  const runSupervisor = (...args) => {
+    const result = spawnSync(process.execPath, [cli, 'coordinate', ...args],
+      { cwd: project, input: `${'a'.repeat(64)}\n`, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  runSupervisor('authority-init');
+  const critical = await call('request', { owner: 'urgent', resources: ['resource:local-odoo-critical'] });
+  const stage = await call('request', { owner: 'urgent', resources: ['resource:staging'] });
+  const candidate = 'c'.repeat(40);
+  runSupervisor('authorize-critical-test', critical.id, candidate, 'critical-approval');
+  const { generation } = await call('claim', { id: critical.id });
+  const receipt = join(project, 'run.json');
+  await writeFile(receipt, JSON.stringify({
+    outcome: 'green', source_revision: candidate, source_dirty: false, child_exit: 0,
+    skips: 0, expected_tests: 1, actual_tests: 1, database_oid: 1000,
+  }));
+  assert.deepEqual(await call('request-hotfix-priority',
+    { id: critical.id, generation, staging_id: stage.id, receipt }),
+    { id: stage.id, candidate, state: 'requested' });
+  assert.equal((await call('claim', { id: stage.id })).state, 'queued');
+  assert.equal((await call('status', {})).requests.find((row) => row.id === stage.id).priority, 'requested');
+  assert.equal((await call('release', { id: critical.id, generation })).state, 'released');
+});
+
 test('MCP checks held grants and accepts checkpoint evidence from the requested checkout only', async (t) => {
   const project = await realpath(await mkdtemp(join(tmpdir(), 'toolkit-mcp-hotfix-')));
   t.after(() => rm(project, { recursive: true, force: true }));

@@ -99,13 +99,15 @@ test('a reserved Critical slot requires exact approval and a passing run request
   const evidence = { source_revision: candidate, source_dirty: false, database: 'cpd_local_test_critical',
     database_oid: 123, outcome: 'green', expected_tests: 1, actual_tests: 1, child_exit: 0, skips: 0 };
   const complete = ['request-hotfix-priority', hot.id, String(held.generation), staging.id, receipt];
+  const credentials = `${hot.capability}\n${staging.capability}`;
   await writeFile(receipt, JSON.stringify({ ...evidence, outcome: 'failed' }));
-  await denied(worktree, complete, hot.capability);
+  await denied(worktree, complete, credentials);
   await writeFile(receipt, JSON.stringify({ ...evidence, source_revision: 'e'.repeat(40) }));
-  await denied(worktree, complete, hot.capability);
+  await denied(worktree, complete, credentials);
   await writeFile(receipt, JSON.stringify(evidence));
-  assert.equal((await command(worktree, complete, hot.capability)).state, 'requested');
-  assert.equal((await command(worktree, complete, hot.capability)).state, 'requested');
+  await denied(worktree, complete, `${hot.capability}\n${ordinary.capability}`);
+  assert.equal((await command(worktree, complete, credentials)).state, 'requested');
+  assert.equal((await command(worktree, complete, credentials)).state, 'requested');
   assert.equal((await act(worktree, 'claim', staging)).state, 'queued');
   await command(project, ['authorize-hotfix', staging.id, candidate, 'owner', 'release-ref'], supervisor);
   assert.equal((await act(project, 'claim', ordinary)).state, 'queued');
@@ -414,7 +416,7 @@ test('supervisor withdraws an abandoned queued request in one step and finished 
   // Age the finished requests past the one-week window; the next request prunes them.
   const { DatabaseSync } = await import('node:sqlite');
   const db = new DatabaseSync(join(project, '.git', 'development-team-coordinator.sqlite'));
-  db.prepare("UPDATE coordinator_grants SET requested_at = '2020-01-01T00:00:00.000Z' WHERE state != 'held'").run();
+  db.prepare("UPDATE coordinator_grants_v5 SET requested_at = '2020-01-01T00:00:00.000Z' WHERE state != 'held'").run();
   db.close();
   await request(project, 'later', 'resource:other');
   const remaining = (await command(project, ['status'])).requests.map((entry) => entry.owner);

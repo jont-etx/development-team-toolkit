@@ -9,6 +9,10 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 const capabilityPattern = /^[0-9a-f]{64}$/;
 const commitPattern = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const staging = 'resource:staging';
+const isolatedOdoo = 'resource:local-odoo-isolated';
+const criticalOdoo = 'resource:local-odoo-critical';
+const odooMaintenance = new Set(['resource:local-odoo', 'resource:test-runner']);
+const odooPools = new Map([[isolatedOdoo, 2], [criticalOdoo, 1]]);
 
 function gitPath(option) {
   try {
@@ -49,6 +53,9 @@ function normalizeResource(value, root) {
 }
 
 function overlaps(left, right) {
+  if (odooPools.has(left) && odooMaintenance.has(right)
+      || odooPools.has(right) && odooMaintenance.has(left)) return true;
+  if (odooPools.has(left) && left === right) return false;
   if (left === right) return true;
   if (!left.startsWith('file:') || !right.startsWith('file:')) return false;
   return left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
@@ -77,7 +84,7 @@ function openStore(commonDir) {
 }
 
 // Runs once per store version; every Coordinator command used to repeat it.
-const storeVersion = 4;
+const storeVersion = 5;
 
 function migrate(db) {
   // Older scheduler binaries must not mutate grants without generation fencing.
@@ -134,12 +141,19 @@ function migrate(db) {
       db.prepare('UPDATE coordinator_grants SET generation = ? WHERE id = ?').run(generation, row.id);
     }
   }
+  // Existing clients read the compatibility view, but only capacity-aware clients can write.
+  db.exec(`ALTER TABLE coordinator_grants RENAME TO coordinator_grants_v5;
+    CREATE VIEW coordinator_grants AS SELECT * FROM coordinator_grants_v5;
+    CREATE TABLE coordinator_critical_tests (
+      test_id TEXT PRIMARY KEY, candidate TEXT NOT NULL, approval_ref TEXT NOT NULL,
+      staging_id TEXT UNIQUE, generation INTEGER, receipt_sha256 TEXT
+    );`);
   db.exec(`PRAGMA user_version = ${storeVersion}`);
 }
 
 function authenticate(db, id, capability) {
   if (!uuid.test(id ?? '') || !capabilityPattern.test(capability ?? '')) throw new Error('Invalid request credentials.');
-  const row = db.prepare('SELECT * FROM coordinator_grants WHERE id = ?').get(id);
+  const row = db.prepare('SELECT * FROM coordinator_grants_v5 WHERE id = ?').get(id);
   if (!row || !timingSafeEqual(Buffer.from(row.capability_hash), hash(capability))) {
     throw new Error('Invalid request credentials.');
   }
@@ -180,7 +194,7 @@ function audit(db, event, requestId, detail) {
 
 function hotfixHandoff(db) {
   return db.prepare(`SELECT h.*, r.state AS hotfix_state FROM coordinator_hotfix h
-    JOIN coordinator_grants r ON r.id = h.hotfix_id WHERE h.singleton = 1`).get();
+    JOIN coordinator_grants_v5 r ON r.id = h.hotfix_id WHERE h.singleton = 1`).get();
 }
 
 function handoffInProgress(handoff) {
@@ -211,7 +225,7 @@ function requireGeneration(row, value) {
 }
 
 function queueRank(id, handoff) {
-  if (handoffInProgress(handoff) && id === handoff.hotfix_id) return 0;
+  if (id === handoff?.hotfix_id && handoff.hotfix_state === 'queued') return 0;
   if (id === handoff?.holder_id) return 1;
   return 2;
 }
@@ -346,6 +360,20 @@ function checkpointEvidence(db, resources, path) {
     : safeRef(evidence[name], 'checkpoint reference')]));
 }
 
+function criticalReceipt(path, candidate) {
+  const file = lstatSync(path);
+  if (!file.isFile() || file.size > 65536) throw new Error('Invalid Critical test receipt file.');
+  const raw = readFileSync(path);
+  const run = JSON.parse(raw);
+  if (run?.outcome !== 'green' || run.source_revision !== candidate || run.source_dirty !== false
+      || run.child_exit !== 0 || run.skips !== 0 || !Number.isSafeInteger(run.expected_tests)
+      || run.expected_tests < 1 || run.actual_tests !== run.expected_tests
+      || !Number.isSafeInteger(run.database_oid) || run.database_oid < 1) {
+    throw new Error('Critical priority requires a passing exact-candidate test receipt.');
+  }
+  return hash(raw).toString('hex');
+}
+
 async function readCapabilities(count) {
   let input = '';
   for await (const chunk of process.stdin) {
@@ -370,14 +398,16 @@ export async function coordinate(args, { loadPolicy } = {}) {
   const counts = { status: [0], audit: [0], 'authority-init': [0], 'policy-sync': [0],
     handoff: [1], quarantine: [2], recover: [2, 3], withdraw: [2], claim: [1], release: [1, 2, 3],
     cancel: [1], 'check-held': [2, 3], 'authorize-hotfix': [4], 'checkpoint-hotfix': [3],
-    'authorize-release': [2], 'release-check': [4] };
+    'authorize-release': [2], 'release-check': [4], 'authorize-critical-test': [3],
+    'request-hotfix-priority': [4] };
   if (command !== 'request' && !Object.hasOwn(counts, command)) {
     throw new Error(`Usage: coordinator request|${Object.keys(counts).join('|')}`);
   }
   if (counts[command] && !counts[command].includes(values.length)) throw new Error('Invalid Coordinator arguments.');
-  const secretCount = ['handoff', 'recover'].includes(command) ? 2
+  const secretCount = ['handoff', 'recover', 'request-hotfix-priority'].includes(command) ? 2
     : ['authority-init', 'policy-sync', 'quarantine', 'withdraw', 'claim', 'release', 'cancel',
-      'check-held', 'authorize-hotfix', 'checkpoint-hotfix', 'authorize-release', 'release-check'].includes(command) ? 1 : 0;
+      'check-held', 'authorize-hotfix', 'checkpoint-hotfix', 'authorize-release', 'release-check',
+      'authorize-critical-test'].includes(command) ? 1 : 0;
   const secrets = secretCount ? await readCapabilities(secretCount) : [];
   const [capability, nextCapability] = secrets;
   let owner;
@@ -388,6 +418,10 @@ export async function coordinate(args, { loadPolicy } = {}) {
       throw new Error('Request requires an owner and 1 to 64 resources.');
     }
     newResources = [...new Set(values.slice(1).map((value) => normalizeResource(value, root)))].sort();
+    const pools = newResources.filter((resource) => odooPools.has(resource));
+    if (pools.length && (pools.length > 1 || newResources.some((resource) => odooMaintenance.has(resource) || resource === staging))) {
+      throw new Error('Use one isolated Odoo slot without maintenance or staging resources.');
+    }
   }
   const db = openStore(commonDir);
   try {
@@ -400,15 +434,19 @@ export async function coordinate(args, { loadPolicy } = {}) {
     }
     if (command === 'status') {
       return transaction(db, () => {
-        const rows = db.prepare('SELECT id, owner, resources, state, requested_at, claimed_at, generation FROM coordinator_grants ORDER BY sequence').all();
+        const rows = db.prepare('SELECT id, owner, resources, state, requested_at, claimed_at, generation FROM coordinator_grants_v5 ORDER BY sequence').all();
         const quarantined = new Set(db.prepare('SELECT request_id FROM coordinator_quarantine').all().map((row) => row.request_id));
         const authority = db.prepare('SELECT epoch FROM coordinator_authority WHERE singleton = 1').get();
         const policy = db.prepare('SELECT fixtures FROM coordinator_policy WHERE singleton = 1').get();
         const handoff = hotfixHandoff(db);
         const suspended = handoffInProgress(handoff) ? handoff.holder_id : null;
+        const priority = new Map(db.prepare('SELECT staging_id, candidate FROM coordinator_critical_tests WHERE staging_id IS NOT NULL')
+          .all().map((entry) => [entry.staging_id, entry.candidate]));
         return { epoch: authority?.epoch ?? null, fixtures: policy ? JSON.parse(policy.fixtures) : {},
           requests: rows.map((row) => ({ ...row, state: quarantined.has(row.id) ? 'quarantined' : row.id === suspended ? 'suspended' : row.state,
-            resources: JSON.parse(row.resources), age_seconds: age(row) })) };
+            resources: JSON.parse(row.resources), age_seconds: age(row),
+            ...(priority.has(row.id) ? { critical_candidate: priority.get(row.id),
+              priority: row.id === handoff?.hotfix_id ? 'authorized' : 'requested' } : {}) })) };
       }, 'DEFERRED');
     }
     if (command === 'audit') {
@@ -440,7 +478,7 @@ export async function coordinate(args, { loadPolicy } = {}) {
         const current = db.prepare('SELECT fixtures FROM coordinator_policy WHERE singleton = 1').get();
         const next = JSON.stringify(proposedPolicy);
         if ((!current || current.fixtures !== next)
-            && db.prepare("SELECT 1 FROM coordinator_grants WHERE state IN ('queued', 'held') LIMIT 1").get()) {
+            && db.prepare("SELECT 1 FROM coordinator_grants_v5 WHERE state IN ('queued', 'held') LIMIT 1").get()) {
           throw new Error('Cannot change fixture policy while requests are active.');
         }
         db.prepare('INSERT INTO coordinator_policy VALUES (1, ?) ON CONFLICT(singleton) DO UPDATE SET fixtures = excluded.fixtures').run(next);
@@ -452,15 +490,31 @@ export async function coordinate(args, { loadPolicy } = {}) {
         const capability = randomBytes(32).toString('hex');
         reserveCapability(db, capability);
         // Finished requests leave the queue after a week; the audit log keeps their history.
-        db.prepare(`DELETE FROM coordinator_grants WHERE state IN ('released', 'cancelled')
+        db.prepare(`DELETE FROM coordinator_grants_v5 WHERE state IN ('released', 'cancelled')
           AND (requested_at IS NULL OR requested_at < ?)
           AND id NOT IN (SELECT hotfix_id FROM coordinator_hotfix)`)
           .run(new Date(Date.now() - pruneAfterMs).toISOString());
-        db.prepare('INSERT INTO coordinator_grants (id, capability_hash, owner, resources, state, requested_at) VALUES (?, ?, ?, ?, ?, ?)')
+        db.prepare('INSERT INTO coordinator_grants_v5 (id, capability_hash, owner, resources, state, requested_at) VALUES (?, ?, ?, ?, ?, ?)')
           .run(id, hash(capability), owner, JSON.stringify(newResources), 'queued', now());
         return { id, capability, state: 'queued' };
       }
       const handoff = hotfixHandoff(db);
+      if (command === 'authorize-critical-test') {
+        requireAuthority(db, capability);
+        const [id, candidate, reference] = values;
+        if (!uuid.test(id) || !commitPattern.test(candidate)) throw new Error('Critical approval needs an exact candidate.');
+        const test = db.prepare('SELECT resources, state FROM coordinator_grants_v5 WHERE id = ?').get(id);
+        if (test?.state !== 'queued' || !JSON.parse(test.resources).includes(criticalOdoo)) {
+          throw new Error('Critical approval needs a queued Critical test request.');
+        }
+        const approvalRef = safeRef(reference, 'Critical approval reference');
+        refuseCredentialInAudit(db, approvalRef);
+        db.prepare('INSERT INTO coordinator_critical_tests (test_id, candidate, approval_ref) VALUES (?, ?, ?)')
+          .run(id, candidate, approvalRef);
+        db.prepare('UPDATE coordinator_grants_v5 SET grant_fenced = 1 WHERE id = ?').run(id);
+        audit(db, 'authorize-critical-test', id, { candidate, approvalRef });
+        return { id, candidate, state: 'authorized' };
+      }
       if (command === 'authorize-release') {
         requireAuthority(db, capability);
         const [id, input] = values;
@@ -468,7 +522,7 @@ export async function coordinate(args, { loadPolicy } = {}) {
         const record = releaseRecord(input);
         const serialized = JSON.stringify(record);
         refuseCredentialInAudit(db, serialized);
-        const row = db.prepare('SELECT * FROM coordinator_grants WHERE id = ?').get(id);
+        const row = db.prepare('SELECT * FROM coordinator_grants_v5 WHERE id = ?').get(id);
         if (!row || row.state !== 'held' || !JSON.parse(row.resources).includes(staging)
             || row.generation !== record.generation
             || db.prepare('SELECT 1 FROM coordinator_quarantine WHERE request_id = ?').get(id)) {
@@ -487,10 +541,12 @@ export async function coordinate(args, { loadPolicy } = {}) {
           throw new Error('Hotfix approval requires an exact candidate and an owner or Mark sign-off.');
         }
         if (handoff) throw new Error('A staging hotfix is already authorized or awaiting holder resumption.');
-        const hotfix = db.prepare('SELECT resources, state FROM coordinator_grants WHERE id = ?').get(id);
+        const hotfix = db.prepare('SELECT resources, state FROM coordinator_grants_v5 WHERE id = ?').get(id);
         if (hotfix?.state !== 'queued' || !JSON.parse(hotfix.resources).includes(staging)) {
           throw new Error('Only a queued staging request can be authorized as a hotfix.');
         }
+        const tested = db.prepare('SELECT candidate FROM coordinator_critical_tests WHERE staging_id = ?').get(id);
+        if (tested && tested.candidate !== candidate) throw new Error('Priority request has a different tested candidate.');
         const approvalRef = safeRef(reference, 'hotfix approval reference');
         refuseCredentialInAudit(db, approvalRef);
         refuseCredentialInAudit(db, candidate);
@@ -501,12 +557,12 @@ export async function coordinate(args, { loadPolicy } = {}) {
       if (command === 'withdraw') {
         requireAuthority(db, capability);
         if (!uuid.test(values[0] ?? '')) throw new Error('Invalid request ID.');
-        const row = db.prepare('SELECT state FROM coordinator_grants WHERE id = ?').get(values[0]);
+        const row = db.prepare('SELECT state FROM coordinator_grants_v5 WHERE id = ?').get(values[0]);
         if (!row) throw new Error('Unknown request.');
         if (row.state !== 'queued') throw new Error('Only queued requests can be withdrawn. Quarantine held requests instead.');
         if (handoffInProgress(handoff) && values[0] === handoff.holder_id) throw new Error('Cannot withdraw a suspended holder.');
         const stopRef = safeRef(values[1], 'withdrawal reference');
-        db.prepare("UPDATE coordinator_grants SET state = 'cancelled' WHERE id = ?").run(values[0]);
+        db.prepare("UPDATE coordinator_grants_v5 SET state = 'cancelled' WHERE id = ?").run(values[0]);
         finishRequest(db, values[0]);
         audit(db, 'withdraw', values[0], { stopRef });
         return { state: 'cancelled' };
@@ -514,14 +570,14 @@ export async function coordinate(args, { loadPolicy } = {}) {
       if (command === 'quarantine' || command === 'recover') {
         requireAuthority(db, capability);
         if (!uuid.test(values[0] ?? '')) throw new Error('Invalid request ID.');
-        const row = db.prepare('SELECT * FROM coordinator_grants WHERE id = ?').get(values[0]);
+        const row = db.prepare('SELECT * FROM coordinator_grants_v5 WHERE id = ?').get(values[0]);
         if (!row) throw new Error('Unknown request.');
         const quarantine = db.prepare('SELECT previous_hash FROM coordinator_quarantine WHERE request_id = ?').get(row.id);
         if (command === 'quarantine') {
           if (row.state !== 'held' || quarantine) throw new Error('Only held requests can be quarantined.');
           const reason = safeRef(values[1], 'quarantine reason');
           db.prepare('INSERT INTO coordinator_quarantine VALUES (?, ?, ?)').run(row.id, row.capability_hash, reason);
-          db.prepare('UPDATE coordinator_grants SET capability_hash = ? WHERE id = ?').run(hash(randomBytes(32)), row.id);
+          db.prepare('UPDATE coordinator_grants_v5 SET capability_hash = ? WHERE id = ?').run(hash(randomBytes(32)), row.id);
           audit(db, 'quarantine', row.id, { reason });
           return { state: 'quarantined' };
         }
@@ -532,13 +588,35 @@ export async function coordinate(args, { loadPolicy } = {}) {
         const cleanup = quarantine ? cleanupEvidence(db, row, values[2]) : {};
         if (!quarantine && values[2]) throw new Error('Queued recovery does not accept cleanup evidence.');
         reserveCapability(db, nextCapability);
-        db.prepare("UPDATE coordinator_grants SET capability_hash = ?, state = 'queued', claimed_at = NULL WHERE id = ?").run(hash(nextCapability), row.id);
+        db.prepare("UPDATE coordinator_grants_v5 SET capability_hash = ?, state = 'queued', claimed_at = NULL WHERE id = ?").run(hash(nextCapability), row.id);
         db.prepare('DELETE FROM coordinator_quarantine WHERE request_id = ?').run(row.id);
         audit(db, 'recover', row.id, { stopRef, cleanup });
         return { state: 'queued' };
       }
       const row = authenticate(db, values[0], capability);
       const resources = JSON.parse(row.resources);
+      const critical = resources.includes(criticalOdoo)
+        ? db.prepare('SELECT * FROM coordinator_critical_tests WHERE test_id = ?').get(row.id)
+        : null;
+      if (command === 'request-hotfix-priority') {
+        const [, generation, stagingId, evidence] = values;
+        if (!critical || !uuid.test(stagingId)) throw new Error('An authorized Critical test and a staging request are required.');
+        const staged = authenticate(db, stagingId, nextCapability);
+        requireGeneration(row, generation);
+        if (critical.staging_id === stagingId && critical.generation === row.generation) {
+          return { id: stagingId, candidate: critical.candidate, state: 'requested' };
+        }
+        if (row.state !== 'held' || critical.staging_id || staged?.state !== 'queued'
+            || staged.owner !== row.owner || !JSON.parse(staged.resources).includes(staging)
+            || stagingId === handoff?.hotfix_id) {
+          throw new Error('Priority needs a current Critical grant and its own queued staging request.');
+        }
+        const verified = criticalReceipt(evidence, critical.candidate);
+        db.prepare('UPDATE coordinator_critical_tests SET staging_id = ?, generation = ?, receipt_sha256 = ? WHERE test_id = ?')
+          .run(stagingId, row.generation, verified, row.id);
+        audit(db, 'request-hotfix-priority', stagingId, { testId: row.id, candidate: critical.candidate, receipt: verified });
+        return { id: stagingId, candidate: critical.candidate, state: 'requested' };
+      }
       if (command === 'release-check') {
         const [, generation, candidate, mode] = values;
         if (row.state !== 'held' || !resources.includes(staging)
@@ -563,7 +641,8 @@ export async function coordinate(args, { loadPolicy } = {}) {
         }
         const candidate = values[2];
         if ((candidate !== undefined && !commitPattern.test(candidate))
-            || (handoff?.hotfix_id === row.id && candidate !== handoff.candidate)) {
+            || (handoff?.hotfix_id === row.id && candidate !== handoff.candidate)
+            || (critical && candidate !== critical.candidate)) {
           throw new Error('Hotfix grant does not match the exact authorized candidate.');
         }
         return { project: commonDir, id: row.id, generation: row.generation };
@@ -577,8 +656,8 @@ export async function coordinate(args, { loadPolicy } = {}) {
         const evidence = checkpointEvidence(db, resources, values[2]);
         refuseCredentialInAudit(db, JSON.stringify(evidence));
         db.prepare('UPDATE coordinator_hotfix SET holder_id = ? WHERE singleton = 1').run(row.id);
-        db.prepare("UPDATE coordinator_grants SET state = 'queued', claimed_at = NULL WHERE id = ?").run(row.id);
-        db.prepare('UPDATE coordinator_grants SET grant_fenced = 1 WHERE id IN (?, ?)').run(row.id, handoff.hotfix_id);
+        db.prepare("UPDATE coordinator_grants_v5 SET state = 'queued', claimed_at = NULL WHERE id = ?").run(row.id);
+        db.prepare('UPDATE coordinator_grants_v5 SET grant_fenced = 1 WHERE id IN (?, ?)').run(row.id, handoff.hotfix_id);
         audit(db, 'checkpoint-hotfix', row.id, { generation: row.generation, hotfix: handoff.hotfix_id, evidence });
         return { state: 'suspended' };
       }
@@ -586,16 +665,27 @@ export async function coordinate(args, { loadPolicy } = {}) {
         if (row.state === 'held') return { state: 'held', generation: row.generation };
         if (row.state !== 'queued') throw new Error('Only queued requests can be claimed.');
         if (handoffInProgress(handoff) && row.id === handoff.holder_id) return { state: 'queued' };
+        const pool = resources.find((resource) => odooPools.has(resource));
+        if (pool === criticalOdoo && !critical) return { state: 'queued' };
+        const priorityRequested = db.prepare('SELECT 1 FROM coordinator_critical_tests WHERE staging_id = ?');
+        if (row.id !== handoff?.hotfix_id && priorityRequested.get(row.id)) return { state: 'queued' };
         const rank = queueRank(row.id, handoff);
-        const others = db.prepare("SELECT id, sequence, state, resources FROM coordinator_grants WHERE id != ? AND state IN ('held', 'queued')").all(row.id);
+        const others = db.prepare(`SELECT g.id, g.sequence, g.state, g.resources, c.test_id AS critical_approved
+          FROM coordinator_grants_v5 g LEFT JOIN coordinator_critical_tests c ON c.test_id = g.id
+          WHERE g.id != ? AND g.state IN ('held', 'queued')`).all(row.id);
+        let enqueuedInPool = 0;
         const blocked = others.some((other) => {
+          const competing = JSON.parse(other.resources);
+          if (other.state === 'queued' && ((competing.includes(criticalOdoo) && !other.critical_approved)
+              || (other.id !== handoff?.hotfix_id && priorityRequested.get(other.id)))) return false;
           const otherRank = queueRank(other.id, handoff);
-          return (other.state === 'held' || otherRank < rank || (otherRank === rank && other.sequence < row.sequence))
-            && conflicts(resources, JSON.parse(other.resources));
+          if (other.state !== 'held' && !(otherRank < rank || (otherRank === rank && other.sequence < row.sequence))) return false;
+          if (pool && competing.includes(pool)) enqueuedInPool += 1;
+          return conflicts(resources, competing);
         });
-        if (blocked) return { state: 'queued' };
+        if (blocked || (pool && enqueuedInPool >= odooPools.get(pool))) return { state: 'queued' };
         const generation = audit(db, 'claim', row.id, {});
-        db.prepare("UPDATE coordinator_grants SET state = 'held', claimed_at = ?, generation = ? WHERE id = ?")
+        db.prepare("UPDATE coordinator_grants_v5 SET state = 'held', claimed_at = ?, generation = ? WHERE id = ?")
           .run(now(), generation, row.id);
         if (row.id === handoff?.holder_id) finishRequest(db, row.id);
         return { state: 'held', generation };
@@ -607,14 +697,14 @@ export async function coordinate(args, { loadPolicy } = {}) {
         if (options.length > 1) throw new Error('Invalid release arguments.');
         if (row.grant_fenced || generation !== undefined) requireGeneration(row, generation);
         const cleanup = cleanupEvidence(db, row, options[0]);
-        db.prepare("UPDATE coordinator_grants SET state = 'released' WHERE id = ?").run(row.id);
+        db.prepare("UPDATE coordinator_grants_v5 SET state = 'released' WHERE id = ?").run(row.id);
         finishRequest(db, row.id);
         audit(db, 'release', row.id, { cleanup });
         return { state: 'released' };
       }
       if (row.state !== 'queued') throw new Error('Only queued requests can be cancelled.');
       if (handoffInProgress(handoff) && row.id === handoff.holder_id) throw new Error('Cannot cancel a suspended holder.');
-      db.prepare("UPDATE coordinator_grants SET state = 'cancelled' WHERE id = ?").run(row.id);
+      db.prepare("UPDATE coordinator_grants_v5 SET state = 'cancelled' WHERE id = ?").run(row.id);
       finishRequest(db, row.id);
       audit(db, 'cancel', row.id, {});
       return { state: 'cancelled' };

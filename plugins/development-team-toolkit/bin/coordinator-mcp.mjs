@@ -19,6 +19,7 @@ const fields = {
   release: [['id'], ['capability', 'cleanup_evidence', 'generation']],
   'check-held': [['id', 'resource'], ['capability', 'candidate']],
   'release-check': [['id', 'generation', 'candidate', 'mode'], ['capability']],
+  'request-hotfix-priority': [['id', 'generation', 'staging_id', 'receipt'], ['capability', 'staging_capability']],
 };
 
 const tool = {
@@ -31,6 +32,7 @@ const tool = {
     'check-held takes id and resource, with candidate required for an authorized hotfix.',
     'release-check returns the supervisor-authorized release record for the current held generation.',
     'Hotfix holders checkpoint through the local CLI with their capability on stdin.',
+    'After an authorized Critical local test passes, request-hotfix-priority takes its id, generation, staging_id, and the passing run.json receipt path.',
     'Release a priority hotfix or resumed holder by supplying the current generation.',
     'Pass capability only for a credential a supervisor issued during recovery.',
     'Supervisor operations use the local toolkit CLI.',
@@ -73,7 +75,7 @@ function credentialFile(project, id) {
 }
 
 async function withStoredCredential(project, operation, payload) {
-  if (!['claim', 'cancel', 'release', 'check-held', 'release-check'].includes(operation)
+  if (!['claim', 'cancel', 'release', 'check-held', 'release-check', 'request-hotfix-priority'].includes(operation)
       || !payload || typeof payload !== 'object' || payload.capability !== undefined) return payload;
   if (!uuid.test(payload.id ?? '')) throw new Error('Invalid request ID.');
   try {
@@ -122,6 +124,15 @@ function commandFor(project, operation, payload) {
     args.push(resource);
     if (candidate !== undefined) args.push(candidate);
   }
+  if (operation === 'request-hotfix-priority') {
+    const { staging_id: stagingId, staging_capability: stagingCapability, receipt } = payload;
+    if (!Number.isSafeInteger(generation) || !uuid.test(stagingId ?? '')
+        || typeof stagingCapability !== 'string' || !capabilityPattern.test(stagingCapability)
+        || typeof receipt !== 'string' || !receipt || receipt.length > 4096) {
+      throw new Error('Priority needs a grant generation, staging request, and Critical test receipt.');
+    }
+    return { args: [...args, String(generation), stagingId, receipt], input: `${capability}\n${stagingCapability}` };
+  }
   if (operation === 'release') {
     if (evidence !== undefined) args.push(evidence);
     if (generation !== undefined) args.push(`--generation=${generation}`);
@@ -158,7 +169,12 @@ async function callTool(params) {
   const { operation, payload, project } = params.arguments ?? {};
   try {
     const directory = projectDirectory(project);
-    let result = await runCli(directory, commandFor(directory, operation, await withStoredCredential(directory, operation, payload)));
+    const input = await withStoredCredential(directory, operation, payload);
+    if (operation === 'request-hotfix-priority' && input?.staging_capability === undefined) {
+      if (!uuid.test(input?.staging_id ?? '')) throw new Error('Invalid staging request ID.');
+      input.staging_capability = (await readFile(credentialFile(directory, input.staging_id), 'utf8')).trim();
+    }
+    let result = await runCli(directory, commandFor(directory, operation, input));
     if (operation === 'request') {
       const file = credentialFile(directory, result.id);
       await mkdir(join(file, '..'), { recursive: true });

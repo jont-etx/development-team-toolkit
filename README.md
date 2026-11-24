@@ -182,7 +182,7 @@ For several specialists on one task, use the [parallel workers](plugins/developm
 
 The toolkit includes a local Coordinator for each Git clone. All linked worktrees in that clone use the same queue. The queue lives in Git's common directory and works with Node.js 22.13+ without a wiki or a service. Use project handoffs to record the exact base, owned paths, acceptance checks, and next owner.
 
-The Coordinator reserves a whole request at once. Use `file:<repo-relative-path>` for code or directory ownership and agree on one `resource:<name>` for each shared test runner, fixture, or browser session. Overlapping paths and identical resource names wait in request order. Disjoint claims can run together. Claims are cooperative. Git and the filesystem still allow writes by a process that skips the Coordinator.
+The Coordinator reserves a whole request at once. Use `file:<repo-relative-path>` for code or directory ownership and agree on one `resource:<name>` for each shared test runner, fixture, or browser session. Overlapping paths and identical resource names wait in request order. Disjoint claims can run together. See [isolated Odoo jobs](plugins/development-team-toolkit/toolkit-wiki/workflow.md#isolated-odoo-jobs) for the bounded pools and Critical workflow. Claims are cooperative. Git and the filesystem still allow writes by a process that skips the Coordinator.
 
 ```powershell
 $request = node $toolkit coordinate request worker-a file:src/search resource:browser-qa | ConvertFrom-Json
