@@ -49,6 +49,40 @@ async function run(cwd, args, capability) {
 const request = (cwd, owner, ...resources) => run(cwd, ['request', owner, ...resources]);
 const act = (cwd, action, ticket) => run(cwd, [action, ticket.id], ticket.capability);
 
+test('two isolated Odoo jobs share capacity and an older third job enters after release', async (t) => {
+  const { project, worktree } = await fixture(t);
+  const slot = 'resource:local-odoo-isolated';
+  const a = await request(project, 'first', slot);
+  const b = await request(worktree, 'second', slot);
+  const c = await request(project, 'third', slot);
+  const d = await request(worktree, 'fourth', slot);
+  const claims = await Promise.all([
+    act(project, 'claim', a), act(worktree, 'claim', b), act(project, 'claim', c),
+  ]);
+  assert.deepEqual(claims.map((grant) => grant.state), ['held', 'held', 'queued']);
+  assert.equal((await act(project, 'release', a)).state, 'released');
+  assert.equal((await act(worktree, 'claim', d)).state, 'queued');
+  assert.equal((await act(project, 'claim', c)).state, 'held');
+});
+
+test('shared local maintenance excludes isolated Odoo jobs and keeps its queue position', async (t) => {
+  for (const resource of ['resource:local-odoo', 'resource:test-runner']) {
+    const { project, worktree } = await fixture(t);
+    const slot = 'resource:local-odoo-isolated';
+    const a = await request(project, 'first', slot);
+    const maintenance = await request(worktree, 'maintenance', resource);
+    const b = await request(project, 'second', slot);
+    assert.equal((await act(project, 'claim', a)).state, 'held');
+    assert.equal((await act(worktree, 'claim', maintenance)).state, 'queued');
+    assert.equal((await act(project, 'claim', b)).state, 'queued');
+    assert.equal((await act(project, 'release', a)).state, 'released');
+    assert.equal((await act(worktree, 'claim', maintenance)).state, 'held');
+    assert.equal((await act(project, 'claim', b)).state, 'queued');
+    assert.equal((await act(worktree, 'release', maintenance)).state, 'released');
+    assert.equal((await act(project, 'claim', b)).state, 'held');
+  }
+});
+
 test('disjoint claims run together and an overlapping file waits across worktrees', async (t) => {
   const { project, worktree } = await fixture(t);
   const a = await request(project, 'developer', 'file:src/search');

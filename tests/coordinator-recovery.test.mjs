@@ -67,6 +67,53 @@ async function denied(cwd, args, input = '') {
 const request = (cwd, owner, ...resources) => command(cwd, ['request', owner, ...resources]);
 const act = (cwd, action, ticket, ...args) => command(cwd, [action, ticket.id, ...args], ticket.capability);
 
+test('a reserved Critical slot requires exact approval and a passing run requests staging priority', async (t) => {
+  const { root, project, worktree } = await fixture(t);
+  const routine = 'resource:local-odoo-isolated';
+  const critical = 'resource:local-odoo-critical';
+  const stage = 'resource:staging';
+  const candidate = 'c'.repeat(40);
+  await command(project, ['authority-init'], supervisor);
+  const a = await request(project, 'module-a', routine);
+  const b = await request(worktree, 'module-b', routine);
+  const c = await request(project, 'module-c', routine);
+  assert.equal((await act(project, 'claim', a)).state, 'held');
+  assert.equal((await act(worktree, 'claim', b)).state, 'held');
+  assert.equal((await act(project, 'claim', c)).state, 'queued');
+  const unapproved = await request(project, 'unapproved', critical);
+  const hot = await request(worktree, 'critical', critical);
+  const next = await request(project, 'next-critical', critical);
+  assert.equal((await act(project, 'claim', unapproved)).state, 'queued');
+  await denied(project, ['authorize-critical-test', hot.id, candidate, 'critical-ref'], hot.capability);
+  await command(project, ['authorize-critical-test', hot.id, candidate, 'critical-ref'], supervisor);
+  await command(project, ['authorize-critical-test', next.id, 'd'.repeat(40), 'next-ref'], supervisor);
+  const held = await act(worktree, 'claim', hot);
+  assert.equal(held.state, 'held');
+  assert.equal((await act(project, 'claim', next)).state, 'queued');
+  await denied(worktree, ['check-held', hot.id, critical, 'd'.repeat(40)], hot.capability);
+  assert.equal((await act(worktree, 'check-held', hot, critical, candidate)).generation, held.generation);
+
+  const ordinary = await request(project, 'ordinary', stage);
+  const staging = await request(worktree, 'critical', stage);
+  const receipt = join(root, 'critical-run.json');
+  const evidence = { source_revision: candidate, source_dirty: false, database: 'cpd_local_test_critical',
+    database_oid: 123, outcome: 'green', expected_tests: 1, actual_tests: 1, child_exit: 0, skips: 0 };
+  const complete = ['request-hotfix-priority', hot.id, String(held.generation), staging.id, receipt];
+  await writeFile(receipt, JSON.stringify({ ...evidence, outcome: 'failed' }));
+  await denied(worktree, complete, hot.capability);
+  await writeFile(receipt, JSON.stringify({ ...evidence, source_revision: 'e'.repeat(40) }));
+  await denied(worktree, complete, hot.capability);
+  await writeFile(receipt, JSON.stringify(evidence));
+  assert.equal((await command(worktree, complete, hot.capability)).state, 'requested');
+  assert.equal((await command(worktree, complete, hot.capability)).state, 'requested');
+  assert.equal((await act(worktree, 'claim', staging)).state, 'queued');
+  await command(project, ['authorize-hotfix', staging.id, candidate, 'owner', 'release-ref'], supervisor);
+  assert.equal((await act(project, 'claim', ordinary)).state, 'queued');
+  assert.equal((await act(worktree, 'claim', staging)).state, 'held');
+  await act(worktree, 'release', hot, `--generation=${held.generation}`);
+  assert.equal((await act(project, 'claim', next)).state, 'held');
+});
+
 test('supervisor binds an immutable exact staging authorization to the held generation', async (t) => {
   const { project } = await fixture(t);
   await command(project, ['authority-init'], supervisor);
