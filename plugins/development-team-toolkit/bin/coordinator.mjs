@@ -144,6 +144,8 @@ function migrate(db) {
   // Existing clients read the compatibility view, but only capacity-aware clients can write.
   db.exec(`ALTER TABLE coordinator_grants RENAME TO coordinator_grants_v5;
     CREATE VIEW coordinator_grants AS SELECT * FROM coordinator_grants_v5;
+    ALTER TABLE coordinator_hotfix RENAME TO coordinator_hotfix_v5;
+    CREATE VIEW coordinator_hotfix AS SELECT * FROM coordinator_hotfix_v5;
     CREATE TABLE coordinator_critical_tests (
       test_id TEXT PRIMARY KEY, candidate TEXT NOT NULL, approval_ref TEXT NOT NULL,
       staging_id TEXT UNIQUE, generation INTEGER, receipt_sha256 TEXT
@@ -193,7 +195,7 @@ function audit(db, event, requestId, detail) {
 }
 
 function hotfixHandoff(db) {
-  return db.prepare(`SELECT h.*, r.state AS hotfix_state FROM coordinator_hotfix h
+  return db.prepare(`SELECT h.*, r.state AS hotfix_state FROM coordinator_hotfix_v5 h
     JOIN coordinator_grants_v5 r ON r.id = h.hotfix_id WHERE h.singleton = 1`).get();
 }
 
@@ -215,7 +217,7 @@ function requireMatchingReleasePriority(handoff, id, record) {
 }
 
 function finishRequest(db, id) {
-  db.prepare('DELETE FROM coordinator_hotfix WHERE holder_id = ? OR (hotfix_id = ? AND holder_id IS NULL)').run(id, id);
+  db.prepare('DELETE FROM coordinator_hotfix_v5 WHERE holder_id = ? OR (hotfix_id = ? AND holder_id IS NULL)').run(id, id);
 }
 
 function requireGeneration(row, value) {
@@ -480,7 +482,7 @@ export async function coordinate(args, { loadPolicy } = {}) {
         // Finished requests leave the queue after a week; the audit log keeps their history.
         db.prepare(`DELETE FROM coordinator_grants_v5 WHERE state IN ('released', 'cancelled')
           AND (requested_at IS NULL OR requested_at < ?)
-          AND id NOT IN (SELECT hotfix_id FROM coordinator_hotfix)`)
+          AND id NOT IN (SELECT hotfix_id FROM coordinator_hotfix_v5)`)
           .run(new Date(Date.now() - pruneAfterMs).toISOString());
         db.prepare('INSERT INTO coordinator_grants_v5 (id, capability_hash, owner, resources, state, requested_at) VALUES (?, ?, ?, ?, ?, ?)')
           .run(id, hash(capability), owner, JSON.stringify(newResources), 'queued', now());
@@ -533,15 +535,21 @@ export async function coordinate(args, { loadPolicy } = {}) {
         if (hotfix?.state !== 'queued' || !JSON.parse(hotfix.resources).includes(staging)) {
           throw new Error('Only a queued staging request can be authorized as a hotfix.');
         }
-        const tested = db.prepare('SELECT candidate, test_id, generation, receipt_sha256 FROM coordinator_critical_tests WHERE staging_id = ?').get(id);
+        const tested = db.prepare(`SELECT c.*, g.generation AS current_generation, g.state AS current_state,
+          q.request_id AS quarantined FROM coordinator_critical_tests c
+          LEFT JOIN coordinator_grants_v5 g ON g.id = c.test_id
+          LEFT JOIN coordinator_quarantine q ON q.request_id = c.test_id
+          WHERE c.staging_id = ?`).get(id);
         if (tested ? tested.candidate !== candidate || String(tested.generation) !== verifiedGeneration
-            || tested.receipt_sha256 !== verifiedDigest : verifiedGeneration !== undefined) {
+            || tested.receipt_sha256 !== verifiedDigest || tested.current_generation !== tested.generation
+            || !['held', 'released'].includes(tested.current_state) || tested.quarantined
+          : verifiedGeneration !== undefined) {
           throw new Error('Priority authorization must attest to the exact submitted Critical test evidence.');
         }
         const approvalRef = safeRef(reference, 'hotfix approval reference');
         refuseCredentialInAudit(db, approvalRef);
         refuseCredentialInAudit(db, candidate);
-        db.prepare('INSERT INTO coordinator_hotfix (singleton, hotfix_id, candidate, signer, approval_ref) VALUES (1, ?, ?, ?, ?)').run(id, candidate, signer, approvalRef);
+        db.prepare('INSERT INTO coordinator_hotfix_v5 (singleton, hotfix_id, candidate, signer, approval_ref) VALUES (1, ?, ?, ?, ?)').run(id, candidate, signer, approvalRef);
         audit(db, 'authorize-hotfix', id, { candidate, signer, approvalRef,
           ...(tested ? { verifiedCriticalTest: tested.test_id, generation: tested.generation, receipt: verifiedDigest } : {}) });
         return { id, candidate, state: 'authorized' };
@@ -649,7 +657,7 @@ export async function coordinate(args, { loadPolicy } = {}) {
         requireGeneration(row, values[1]);
         const evidence = checkpointEvidence(db, resources, values[2]);
         refuseCredentialInAudit(db, JSON.stringify(evidence));
-        db.prepare('UPDATE coordinator_hotfix SET holder_id = ? WHERE singleton = 1').run(row.id);
+        db.prepare('UPDATE coordinator_hotfix_v5 SET holder_id = ? WHERE singleton = 1').run(row.id);
         db.prepare("UPDATE coordinator_grants_v5 SET state = 'queued', claimed_at = NULL WHERE id = ?").run(row.id);
         db.prepare('UPDATE coordinator_grants_v5 SET grant_fenced = 1 WHERE id IN (?, ?)').run(row.id, handoff.hotfix_id);
         audit(db, 'checkpoint-hotfix', row.id, { generation: row.generation, hotfix: handoff.hotfix_id, evidence });

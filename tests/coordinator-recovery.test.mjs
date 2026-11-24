@@ -109,10 +109,17 @@ test('a reserved Critical slot requires exact approval and a passing run request
   await denied(project, approval, supervisor);
   await denied(project, [...approval, String(held.generation + 1), receipt], supervisor);
   await denied(project, [...approval, String(held.generation), 'e'.repeat(64)], supervisor);
+  const migrated = new DatabaseSync(join(project, '.git', 'development-team-coordinator.sqlite'));
+  try {
+    assert.throws(() => migrated.prepare(`INSERT INTO coordinator_hotfix (singleton, hotfix_id, candidate, signer, approval_ref)
+      VALUES (1, ?, ?, 'owner', 'legacy-approval')`).run(staging.id, candidate), /cannot modify .*view/);
+  } finally {
+    migrated.close();
+  }
+  await act(worktree, 'release', hot, `--generation=${held.generation}`);
   await command(project, [...approval, String(held.generation), receipt], supervisor);
   assert.equal((await act(project, 'claim', ordinary)).state, 'queued');
   assert.equal((await act(worktree, 'claim', staging)).state, 'held');
-  await act(worktree, 'release', hot, `--generation=${held.generation}`);
   assert.equal((await act(project, 'claim', next)).state, 'held');
 });
 
@@ -167,7 +174,7 @@ test('hotfix release authorization requires explicit supervisor sign-off and can
   const checked = await act(project, 'release-check', ticket, String(held.generation), record.new, 'hotfix');
   assert.equal(checked.hotfix_signer, 'Mark Berg');
   const db = new DatabaseSync(join(project, '.git', 'development-team-coordinator.sqlite'));
-  db.prepare('UPDATE coordinator_hotfix SET signer = NULL WHERE singleton = 1').run();
+  db.prepare('UPDATE coordinator_hotfix_v5 SET signer = NULL WHERE singleton = 1').run();
   db.close();
   await denied(project, ['release-check', ticket.id, String(held.generation), record.new, 'hotfix'], ticket.capability);
   await denied(project, ['release-check', ticket.id, String(held.generation), record.new, 'scoped'], ticket.capability);
