@@ -3,6 +3,10 @@
 Releases are tagged `vX.Y.Z`. `node scripts/release.mjs <version>` adds the next entry from the commits since the
 last tag.
 
+## 0.13.0 - 2026-11-24
+
+- Add waiting and review-tier rules, typed spawns, a usage scan and the memo skill
+
 ## 0.12.0 - 2026-11-23
 
 - Add judged roles: saved outputs, a blind judge and owner calibration
