@@ -7,11 +7,11 @@
 import { createHash, randomInt } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { run } from './eval.mjs';
-import { loadTasks, readContenders, readRows, writeRows } from './evals.mjs';
+import { CAPTURE, loadTasks, readContenders, readRows, writeRows } from './evals.mjs';
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -19,7 +19,39 @@ const stamp = () => new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+
 const rand = () => createHash('sha256').update(`${process.pid}-${Math.random()}`).digest('hex').slice(0, 6);
 const rel = (from, file) => relative(from, file).split('\\').join('/');
 
-/** Run contenders on judged tasks in throwaway worktrees and save each output as its own file. */
+const MAX_FILE = 262144;
+const DELIVERY = [
+  '', '## How to deliver',
+  'This folder is your claimed workspace for this task, with no Git history. Write the complete deliverable to DELIVERABLE.md in this folder, whatever path your role would normally use.',
+  'Write your reasons to REASONS.md: main choices, options you rejected, assumptions, and where your instructions helped or got in the way.',
+  'Only DELIVERABLE.md is graded, so do not put delivery notes, permission notes or summaries of other files in it. Do not write anywhere else.',
+].join('\n');
+
+/** Files of one commit with no Git history and no evals folder, plus an index outside it that lists what a run changed. */
+function exportBase(project, base, workspace, index, evalsDir) {
+  const top = git(project, 'rev-parse', '--show-toplevel').trim();
+  const gitDir = git(project, 'rev-parse', '--absolute-git-dir').trim();
+  const env = { ...process.env, GIT_INDEX_FILE: index };
+  const at = (cwd, ...args) => execFileSync('git', args, { cwd, env, encoding: 'utf8', maxBuffer: 67108864, stdio: ['ignore', 'pipe', 'pipe'] });
+  at(top, 'read-tree', base);
+  // Asked from the evals folder itself, so it also matches when that folder sits in another worktree of this repository.
+  let evals = '';
+  try { evals = git(evalsDir, 'rev-parse', '--show-prefix').trim(); } catch { /* evals folder outside Git */ }
+  if (evals) at(top, 'rm', '-r', '-q', '--cached', '--ignore-unmatch', '--', evals);
+  const tree = (...args) => at(workspace, `--git-dir=${gitDir}`, `--work-tree=${workspace}`, ...args);
+  tree('checkout-index', '-a', '-u');
+  return () => [...tree('diff-files', '--name-only', '-z').split('\0'), ...tree('ls-files', '--others', '-z').split('\0')].filter(Boolean).sort();
+}
+
+/** A regular file directly in the workspace, or null: links could point at anything outside it. */
+async function delivered(workspace, name) {
+  const file = join(workspace, name);
+  const info = await lstat(file).catch(() => null);
+  if (!info?.isFile() || info.nlink > 1 || info.size > MAX_FILE) return null;
+  return (await readFile(file, 'utf8')).trim() || null;
+}
+
+/** Run contenders on judged tasks in isolated copies of the base commit and save each deliverable as its own file. */
 export async function generate(project, dir, specFile, { role, split = 'all', task: only } = {}) {
   const { runs, contenders } = await readContenders(specFile);
   const tasks = (await loadTasks(dir, { role, split, task: only })).filter((task) => task.kind === 'judged');
@@ -31,22 +63,24 @@ export async function generate(project, dir, specFile, { role, split = 'all', ta
     for (const [contender, { command, version }] of contenders) {
       for (let attempt = 1; attempt <= runs; attempt += 1) {
         const scratch = await mkdtemp(join(tmpdir(), 'toolkit-generate-'));
-        const worktree = join(scratch, 'work');
-        git(project, 'worktree', 'add', '--detach', worktree, task.base);
+        const workspace = join(scratch, 'work');
         try {
-          const agent = await run(command, worktree, task.prompt, timeoutMs, { captureOutput: true });
-          if (agent.code === null || agent.code !== 0 || !String(agent.output ?? '').trim()) {
-            errors.push(`${task.id} ${contender} run ${attempt}: ${agent.error ?? `exit ${agent.code}, ${String(agent.output ?? '').trim() ? 'output kept' : 'no output'}`}`);
-            if (agent.code === null || !String(agent.output ?? '').trim()) continue;
+          await mkdir(workspace);
+          const changes = exportBase(project, task.base, workspace, join(scratch, 'index'), dir);
+          const agent = await run(command, workspace, `${task.prompt}\n${DELIVERY}`, timeoutMs, { captureOutput: true });
+          const output = await delivered(workspace, 'DELIVERABLE.md');
+          if (agent.code !== 0 || !output) {
+            errors.push(`${task.id} ${contender} run ${attempt}: ${agent.code !== 0 ? agent.error || (agent.code === null ? 'did not finish' : `exit ${agent.code}`) : 'invalid run, no usable DELIVERABLE.md (a summary is not graded)'}`);
+            continue;
           }
           const folder = join(dir, 'outputs', task.role, task.id);
           await mkdir(folder, { recursive: true });
           const file = join(folder, `${stamp()}-${rand()}.json`);
-          await writeFile(file, `${JSON.stringify({ schemaVersion: 1, at: new Date().toISOString(), role: task.role, task: task.id, split: task.split,
-            contender, version: version ?? null, run: attempt, agentExit: agent.code, seconds: agent.seconds ?? null, output: agent.output }, null, 2)}\n`, { flag: 'wx' });
+          await writeFile(file, `${JSON.stringify({ schemaVersion: CAPTURE, at: new Date().toISOString(), role: task.role, task: task.id, split: task.split,
+            contender, version: version ?? null, run: attempt, agentExit: agent.code, seconds: agent.seconds ?? null,
+            output, reasons: await delivered(workspace, 'REASONS.md'), message: agent.output ?? '', changed: changes() }, null, 2)}\n`, { flag: 'wx' });
           files.push(rel(project, file));
         } finally {
-          git(project, 'worktree', 'remove', '--force', worktree);
           await rm(scratch, { recursive: true, force: true });
         }
       }
@@ -105,7 +139,8 @@ export async function judge(dir, judgeFile, { role, champion, challenger, task: 
   const tasks = new Map((await loadTasks(dir, { role, split: 'all', task: only })).filter((task) => task.kind === 'judged').map((task) => [task.id, task]));
   if (!tasks.size) throw new Error(`No judged tasks for ${role}.`);
   const done = new Set((await readRows(dir, 'ledger')).filter((row) => row.kind === 'judged').map((row) => row.pair));
-  const outputs = (await readOutputs(dir, role)).filter((item) => tasks.has(item.task));
+  // Outputs saved before the deliverable file was captured may be cover notes, so they are never judged.
+  const outputs = (await readOutputs(dir, role)).filter((item) => tasks.has(item.task) && item.schemaVersion === CAPTURE);
   const pairs = [];
   if (!champion) {
     for (const item of outputs) pairs.push({ task: tasks.get(item.task), sides: { output: item, accepted: null }, mode: 'accepted' });
@@ -126,14 +161,15 @@ export async function judge(dir, judgeFile, { role, champion, challenger, task: 
     const text = (name) => pair.sides[name]?.output ?? pair.task.reference;
     const rubric = await readFile(join(dir, pair.task.rubric), 'utf8');
     const prompt = judgePrompt({ rubric, brief: pair.task.prompt, a: text(order[0]), b: text(order[1]), context: pair.mode === 'pair' ? pair.task.reference : null });
-    const answer = await run(spec.command, dir, prompt, timeoutSeconds * 1000, { captureOutput: true });
+    const room = await mkdtemp(join(tmpdir(), 'toolkit-judge-')); // empty, so the judge starts with nothing but the prompt
+    const answer = await run(spec.command, room, prompt, timeoutSeconds * 1000, { captureOutput: true }).finally(() => rm(room, { recursive: true, force: true }));
     const verdict = answer.code === 0 ? parseVerdict(answer.output) : null;
     if (!verdict) { errors.push(`${pair.task.id} ${id}: ${answer.error ?? (answer.code === 0 ? 'no verdict in the reply' : `judge exit ${answer.code}`)}`); continue; }
     const winner = verdict.winner === 'tie' ? 'tie' : order[verdict.winner === 'A' ? 0 : 1];
     const at = new Date().toISOString();
     for (const name of names.filter((side) => pair.sides[side])) {
       const item = pair.sides[name];
-      rows.push({ at, role, task: pair.task.id, kind: 'judged', split: pair.task.split, contender: item.contender, version: item.version, run: item.run,
+      rows.push({ at, role, task: pair.task.id, kind: 'judged', capture: CAPTURE, split: pair.task.split, contender: item.contender, version: item.version, run: item.run,
         agentExit: item.agentExit, seconds: item.seconds, passed: winner === name || winner === 'tie', mode: pair.mode, side: name, winner,
         pair: id, order, judge: spec.name, outputs: Object.values(pair.sides).map((side) => side?.file ?? 'accepted'), reasons: verdict.reasons });
     }

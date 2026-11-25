@@ -40,7 +40,7 @@ test('judged roles: outputs are saved, judged blind, and count only once owner l
 
   // Stand-ins: the good designer covers the states; the weak one does not. The judge prefers outputs marked GOOD.
   const agent = join(root, 'agent.mjs');
-  await writeFile(agent, `let input = ''; for await (const c of process.stdin) input += c;\nconsole.log(process.argv[2] === 'good' ? 'GOOD: empty, loading, error, mobile.' : 'Just the happy path.');\n`);
+  await writeFile(agent, `let input = ''; for await (const c of process.stdin) input += c;\n(await import('node:fs')).writeFileSync('DELIVERABLE.md', process.argv[2] === 'good' ? 'GOOD: empty, loading, error, mobile.' : 'Just the happy path.');\n`);
   const judgeScript = join(root, 'judge.mjs');
   await writeFile(judgeScript, `let input = ''; for await (const c of process.stdin) input += c;
 const part = (name) => input.split('## Output ' + name)[1].split('>>>')[0];
@@ -95,6 +95,78 @@ console.log(JSON.stringify({ winner: a === b ? 'tie' : a ? 'A' : 'B', reasons: '
   const judgeState = ok(project, 'eval', 'calibration', '--role', 'designer', '--evals-dir', evals);
   assert.deepEqual([judgeState.labels, judgeState.agreement, judgeState.calibrated], [9, 0.56, false]);
   assert.equal(compare().verdict, 'judge-not-calibrated');
+});
+
+test('only a delivered file counts, the workspace hides history and evals, and old captures never score', async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'toolkit-capture-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const project = join(root, 'project');
+  const evals = join(project, 'wiki', 'evals');
+  await mkdir(join(evals, 'tasks', 'designer'), { recursive: true });
+  await mkdir(join(evals, 'rubrics'));
+  git(project, 'init', '-q');
+  await writeFile(join(project, 'spec.md'), '# Spec\n');
+  await writeFile(join(evals, 'answer.md'), 'SECRET-EVALS\n');
+  git(project, 'add', '.');
+  git(project, 'commit', '-q', '-m', 'base');
+  const base = git(project, 'rev-parse', 'HEAD');
+  await writeFile(join(project, 'accepted.md'), 'SECRET-LATER\n');
+  git(project, 'add', '.');
+  git(project, 'commit', '-q', '-m', 'accepted page');
+  // Generate from a linked worktree's evals folder, as CPD does.
+  const linked = join(root, 'linked');
+  git(project, 'worktree', 'add', '-q', '--detach', linked);
+  const dir = join(linked, 'wiki', 'evals');
+  await mkdir(join(dir, 'tasks', 'designer'), { recursive: true });
+  await mkdir(join(dir, 'rubrics'), { recursive: true });
+  await writeFile(join(dir, 'rubrics', 'designer.md'), '- R\n');
+  await writeFile(join(dir, 'tasks', 'designer', 't.json'), JSON.stringify({ schemaVersion: 1, id: 't', role: 'designer', kind: 'judged', split: 'train', base,
+    prompt: 'Design it.', rubric: 'rubrics/designer.md', reference: 'accepted' }));
+  const outside = join(root, 'outside.md');
+  await writeFile(outside, 'SECRET-OUTSIDE\n');
+  const agent = join(root, 'agent.mjs');
+  await writeFile(agent, `import fs from 'node:fs'; import { spawnSync } from 'node:child_process';
+for await (const c of process.stdin) void c;
+const mode = process.argv[2];
+console.log('I wrote the spec elsewhere.');
+if (mode === 'linked') fs.linkSync(${JSON.stringify(outside)}, 'DELIVERABLE.md');
+if (mode === 'empty') fs.writeFileSync('DELIVERABLE.md', '  ');
+if (mode === 'file') {
+  fs.appendFileSync('spec.md', 'more');
+  fs.writeFileSync('REASONS.md', 'because');
+  fs.writeFileSync('DELIVERABLE.md', JSON.stringify({ files: fs.readdirSync('.').sort(), evals: fs.existsSync('wiki/evals'), log: spawnSync('git', ['log', '--all']).status }));
+}\n`);
+  const spec = join(root, 'contenders.json');
+  const command = (mode) => ({ command: [process.execPath, agent, mode], version: 'v1' });
+  await writeFile(spec, JSON.stringify({ runs: 1, contenders: { file: command('file'), summary: command('summary'), empty: command('empty'), linked: command('linked') } }));
+  const result = ok(project, 'eval', 'generate', spec, '--role', 'designer', '--evals-dir', dir);
+  assert.equal(result.outputs, 1);
+  assert.equal(result.errors.length, 3);
+  assert.ok(result.errors.every((error) => /no usable DELIVERABLE/.test(error)), result.errors.join('\n'));
+  const folder = join(dir, 'outputs', 'designer', 't');
+  const [name] = await readdir(folder);
+  const saved = JSON.parse(await readFile(join(folder, name), 'utf8'));
+  const seen = JSON.parse(saved.output);
+  assert.deepEqual(seen.files, ['REASONS.md', 'spec.md']);
+  assert.equal(seen.evals, false);
+  assert.notEqual(seen.log, 0, 'no Git history in the workspace');
+  assert.deepEqual([saved.reasons, saved.message.trim()], ['because', 'I wrote the spec elsewhere.']);
+  assert.deepEqual(saved.changed, ['DELIVERABLE.md', 'REASONS.md', 'spec.md']);
+  assert.equal(git(project, 'status', '--porcelain'), '', 'the export leaves the project index alone');
+
+  // An old-capture output and its score are ignored; the judge runs in an empty folder and sees no reasons.
+  await writeFile(join(folder, 'old.json'), JSON.stringify({ ...saved, schemaVersion: 1 }));
+  await mkdir(join(dir, 'ledger'), { recursive: true });
+  await writeFile(join(dir, 'ledger', 'old.jsonl'), `${JSON.stringify({ role: 'designer', task: 't', kind: 'judged', split: 'train', contender: 'old', version: 'v0', passed: true, pair: 'p' })}\n`);
+  const judgeScript = join(root, 'judge.mjs');
+  await writeFile(judgeScript, `import fs from 'node:fs'; let input = ''; for await (const c of process.stdin) input += c;
+if (fs.readdirSync('.').length || input.includes('because') || input.includes('elsewhere')) process.exit(3);
+console.log('{"winner": "tie", "reasons": "r"}');\n`);
+  const judgeFile = join(root, 'judge.json');
+  await writeFile(judgeFile, JSON.stringify({ name: 'j', command: [process.execPath, judgeScript] }));
+  const judged = ok(project, 'eval', 'judge', judgeFile, '--role', 'designer', '--evals-dir', dir);
+  assert.deepEqual([judged.judged, judged.errors], [1, []]);
+  assert.deepEqual(Object.keys(ok(project, 'eval', 'report', '--evals-dir', dir).scores.designer), ['file@v1']);
 });
 
 test('judge prompt hides authorship and the verdict parser takes only a valid last verdict', () => {

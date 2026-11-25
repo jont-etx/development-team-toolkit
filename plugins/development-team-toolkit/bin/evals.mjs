@@ -14,6 +14,7 @@ import { run } from './eval.mjs';
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const SHA = /^[0-9a-f]{7,40}$/i;
+export const CAPTURE = 2; // judged outputs and scores from before the deliverable file was captured (no 2) never count
 const KINDS = ['golden', 'regression', 'seeded', 'judged'];
 const SPLITS = ['train', 'holdout'];
 const RESULTS = ['accepted', 'rework', 'rejected'];
@@ -451,7 +452,7 @@ export async function readRows(dir, kind) {
   if (existsSync(folder)) {
     for (const name of (await readdir(folder)).filter((file) => file.endsWith('.jsonl')).sort()) rows.push(...await jsonl(join(folder, name)));
   }
-  return rows;
+  return kind === 'ledger' ? rows.filter((row) => row.kind !== 'judged' || row.capture === CAPTURE) : rows;
 }
 
 async function jsonl(file) {
